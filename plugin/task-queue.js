@@ -1,0 +1,9 @@
+const {imageSources,unwrap}=require('./api');
+class TaskQueue{
+ constructor({jobs=[],persist,client,onChange}){this.jobs=jobs;this.persist=persist;this.client=client;this.onChange=onChange;this.querying=new Set();}
+ save(){this.persist(this.jobs);this.onChange();}
+ async submit(record,images,params){const index=this.jobs.findIndex(j=>j.id===record.id);if(index>=0)this.jobs[index]=record;else this.jobs.unshift(record);this.save();const api=await this.client();for(let i=0;i<record.count;i++){record.state='submitting';this.save();try{const id=await api.submit(record.model,record.instruction,images,params);record.tasks.push({id,state:'running',results:[]});this.save();}catch(e){record.state='uncertain';record.error=e.message;this.save();return;}}record.state='running';this.save();}
+ async tick(){await Promise.all(this.jobs.flatMap(job=>job.tasks.filter(task=>task.state==='running').map(task=>this.query(job,task))));}
+ async query(job,task){if(this.querying.has(task.id))return;this.querying.add(task.id);try{const api=await this.client(),response=await api.status(task.id),data=unwrap(response),state=data.state||response.state;task.progress=data.progress??response.progress;task.updatedAt=Date.now();task.error=null;if(data.is_final||response.is_final||['success','failed','error'].includes(state)){task.state=state==='success'?'ready':'failed';task.error=state==='success'?null:String(data.error||response.error||'平台任务失败');task.results=imageSources(response).map(source=>({source,imported:false}));if(task.state==='ready'&&!task.results.length){task.state='failed';task.error='平台完成但没有返回可识别图片。';}}else task.platformState=state||'running';if(job.state!=='uncertain')job.state=job.tasks.every(t=>t.state==='ready')?'ready':job.tasks.some(t=>t.state==='running')?'running':'failed';}catch(e){task.error=e.message;}finally{this.querying.delete(task.id);this.save();}}
+}
+module.exports={TaskQueue};

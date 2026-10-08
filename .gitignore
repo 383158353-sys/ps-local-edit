@@ -1,0 +1,10 @@
+.tools/
+vendor/
+node_modules/
+.uxprc
+.env
+.env.*
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

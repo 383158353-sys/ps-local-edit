@@ -1,0 +1,10 @@
+This project is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.
+
+To view a copy of this license, visit http://creativecommons.org/licenses/by-nc-sa/4.0/ or send a letter to Creative Commons, PO Box 1866, Mountain View, CA 94042, USA.
+
+=== Commercial Use Clarification ===
+
+Please note that the NonCommercial restriction applies strictly to the source code of this plugin, the helper application, and its associated components. 
+You may not sell, redistribute for a fee, or use this software code to create a commercial service.
+
+FromPS / ToPS does not claim rights over images or artwork generated, modified, or processed using this software. Usage rights for generated or processed images depend on your rights to the input material and on the terms of the AI tool or API provider you used.

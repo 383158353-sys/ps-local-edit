@@ -1,0 +1,19 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>局部改图</title><link rel="stylesheet" href="../plugin/panel.css"><style>body{width:320px}select,button{font:inherit;color:#f2f2f2;background:#414141;border:1px solid #666;border-radius:4px;padding:7px}select,#generate{width:100%}#generate{background:#ededed;color:#202020;border:0;font-weight:600;padding:10px}button:hover{filter:brightness(1.15)}input[type=checkbox]{width:auto}</style></head><body><main>
+<header><strong>局部改图</strong><button id="settings-toggle" quiet>设置</button></header>
+<section id="settings" style="display:none">
+<div class="row"><strong>连接设置</strong><button id="back-editor" quiet>返回改图</button></div>
+<label>LK888 API Key</label><input id="api-key" type="password" placeholder="输入后保存到本机" autocomplete="off">
+<div class="row"><button id="save-key">保存密钥</button><button id="test-key">检查连接</button></div><p class="hint">https://api.lk888.ai</p>
+<label>其他模型 ID</label><input id="custom-model" placeholder="平台提供的准确模型 ID">
+<label><input type="checkbox" id="reset-confirm">已在平台确认旧任务，可以结束记录</label><button id="reset-job">结束当前任务记录</button></section>
+<section id="editor">
+<div id="selection-gate" class="gate"><p id="selection-hint">在 PS 框选或套索选中一个区域。</p><button id="capture-selection">局部改图 · 读取选区</button></div>
+<div class="row"><label class="inline">图片</label><button id="refresh-selection" quiet>更新选区</button></div>
+<div id="images-row" class="images-row"><div class="thumb" id="preview-box"><span class="badge">1</span><img id="preview" alt="选区参考图"><span id="selection-size" class="hint">尚未读取选区</span></div><div id="reference-thumbs" class="references"></div><div id="dropzone" class="dropzone"><button id="add-reference" quiet>＋ 添加图片</button><span class="hint">或拖入文件</span></div></div>
+<p id="reference-label" style="display:none"></p><button id="clear-reference" quiet style="display:none">清空参考图</button>
+<label for="prompt">修改要求</label><textarea id="prompt" placeholder="例如：去掉镜子里的灯光，保留镜框与桌面的细节。"></textarea>
+<div class="options"><div class="option"><label>模型</label><select id="model"><option value="banana-2" selected>Nano Banana 2</option><option value="banana-pro">Nano Banana Pro</option><option value="tt-image-2">GPT Image 2</option><option value="tt-image-2.5">GPT Image 2.5</option><option value="custom">其他模型</option></select></div><div class="option"><label>清晰度</label><select id="quality"><option value="auto" selected>模型默认</option><option value="1K">1K</option><option value="2K">2K</option><option value="4K">4K</option></select></div></div>
+<label>尺寸</label><select id="output-size"><option value="original" selected>匹配原图选区</option><option value="1:1">正方形 · 1:1</option><option value="4:3">横图 · 4:3</option><option value="3:4">竖图 · 3:4</option><option value="16:9">横图 · 16:9</option><option value="9:16">竖图 · 9:16</option></select>
+<button id="generate" variant="cta">生成并添加图层</button>
+<div class="row" id="recovery" style="display:none"><button id="resume">查询原任务</button><button id="import-result">导入结果</button><button id="save-result">保存结果</button></div>
+</section><p id="status" role="status">先读取要修改的选区。</p></main><script>document.getElementById("settings-toggle").onclick=()=>{const s=document.getElementById("settings"),e=document.getElementById("editor");const open=s.style.display==="none";s.style.display=open?"block":"none";e.style.display=open?"none":"block";};</script></body></html>
