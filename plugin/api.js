@@ -6,7 +6,11 @@ const MODELS = [
   { id: 'banana-2', label: 'Nano Banana 2' },
   { id: 'banana-pro', label: 'Nano Banana Pro' },
   { id: 'tt-image-2', label: 'GPT Image 2' },
-  { id: 'tt-image-2.5', label: 'GPT Image 2.5' }
+  { id: 'tt-image-2.5', label: 'GPT Image 2.5' },
+  { id: 'doubao-seedream-5-0-pro-260628', label: '即梦 5.0 Pro' },
+  { id: 'gk-image-2.0', label: 'GK Image 2.0' },
+  { id: 'qwen-image-max', label: '千问 Image Max' },
+  { id: 'custom', label: '其他模型（自定义 ID）' }
 ];
 function unwrap(value) { return value && value.data && typeof value.data === 'object' && !Array.isArray(value.data) ? value.data : value; }
 function imageSources(payload) {
@@ -44,6 +48,7 @@ class MediaClient {
       try { payload = await response.json(); } catch (_) { throw new Error('平台返回了无法识别的响应。'); }
       if (!response.ok || payload.error) {
         const error = payload.error;
+        if (response.status === 502) throw new Error('LK888 上游模型返回 502，模型暂不可用或平台请求超时。请稍后重试，并先在 LK888 确认任务状态，避免重复提交。'+(error?.message?' 原因：'+error.message:''));
         throw new Error((error && (error.message || error.type)) || ('接口请求失败：' + response.status));
       }
       return payload;

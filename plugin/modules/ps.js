@@ -5,6 +5,7 @@
 
 const { app, action, core, imaging, constants } = require('photoshop');
 const settings = require('./settings.js');
+const { fitBoundsToAspect } = require('./geometry.js');
 
 /**
  * Check if there is an active document
@@ -195,6 +196,27 @@ async function captureSelection(sourceMode, viaTempDocCreation, fullDocMask = fa
             const fullDocRatioLabel = getDocAspectRatioLabel(docWidth, docHeight);
             bestRatioName = `Full Doc ${fullDocRatioLabel ? ' ' + fullDocRatioLabel : ''}`;
             console.log('Full Doc Mask mode: expandedBounds set to entire document:', expandedBounds);
+        } else if (captureOptions.tight) {
+            // Keep the model input close to the selected area. The caller still
+            // supplies the original selection mask, so this rectangular capture
+            // gives the model a little context while the pasted layer remains
+            // clipped to the user's exact irregular selection.
+            const requestedPadding = Number(captureOptions.padding);
+            const padding = Number.isFinite(requestedPadding) ? Math.max(0, Math.round(requestedPadding)) : 0;
+            const ratioBounds = captureOptions.aspectRatio
+                ? fitBoundsToAspect(bounds, docWidth, docHeight, captureOptions.aspectRatio, padding)
+                : null;
+            if (ratioBounds) {
+                expandedBounds = ratioBounds;
+                bestRatioName = captureOptions.aspectRatio;
+            } else {
+                const left = Math.max(0, Math.floor(bounds.left - padding));
+                const top = Math.max(0, Math.floor(bounds.top - padding));
+                const right = Math.min(docWidth, Math.ceil(bounds.right + padding));
+                const bottom = Math.min(docHeight, Math.ceil(bounds.bottom + padding));
+                expandedBounds = { left, top, right, bottom, width: right - left, height: bottom - top };
+                bestRatioName = 'Tight Selection';
+            }
         } else {
             // 1. Set minimum padding
             const MIN_PADDING = 50;
@@ -515,9 +537,12 @@ async function captureSelection(sourceMode, viaTempDocCreation, fullDocMask = fa
         }
 
         // Build context info
+        let documentPath = null;
+        try { documentPath = doc.path || null; } catch (_) {}
         const context = {
             documentId: doc.id,
             documentName: doc.name,
+            documentPath,
             resolution: doc.resolution,
             layerName: activeLayer ? activeLayer.name : null,
             layerId: activeLayer ? activeLayer.id : null,
@@ -530,6 +555,7 @@ async function captureSelection(sourceMode, viaTempDocCreation, fullDocMask = fa
             maskData,
             bounds: expandedBounds, // Return the expanded bounds as the primary bounds
             aspectRatio: bestRatioName,
+            aspectRatioMatched: !captureOptions.aspectRatio || bestRatioName === captureOptions.aspectRatio,
             isSelectAll, // true when Ctrl+A / Select All: mask is all-white, no spatial info
             context
         };
@@ -1402,6 +1428,13 @@ async function placeAsEditableSmartObject(fileToken, bounds, targetDoc) {
 
     console.log("Creating temporary document for high-res Smart Object placement...");
     let tempDoc = null;
+    const isOpen = (document) => {
+        if (!document || !app.documents) return false;
+        for (let index = 0; index < app.documents.length; index++) {
+            if (app.documents[index].id === document.id) return true;
+        }
+        return false;
+    };
 
     try {
         // Create an 8000x8000 temporary document
@@ -1465,11 +1498,18 @@ async function placeAsEditableSmartObject(fileToken, bounds, targetDoc) {
         const smartObjectLayer = tempDoc.activeLayers[0];
         const duplicatedLayer = await smartObjectLayer.duplicate(targetDoc);
 
-        // Step 5: Close temp doc without saving
-        await tempDoc.closeWithoutSaving();
-        tempDoc = null; // Mark as closed
+        // Duplicate can activate the destination document. Explicitly activate
+        // the temporary document before closing it so Photoshop never closes
+        // the user's working document by active-tab side effect.
+        if (!isOpen(targetDoc)) throw new Error("目标 Photoshop 文档已关闭，未能放回生成图层。");
+        if (isOpen(tempDoc)) {
+            app.activeDocument = tempDoc;
+            tempDoc.closeWithoutSaving();
+        }
+        tempDoc = null;
 
         // Step 6: Select the duplicated layer in the target document
+        if (!isOpen(targetDoc)) throw new Error("目标 Photoshop 文档已关闭，未能放回生成图层。");
         app.activeDocument = targetDoc;
         targetDoc.activeLayers = [duplicatedLayer];
 
@@ -1483,17 +1523,19 @@ async function placeAsEditableSmartObject(fileToken, bounds, targetDoc) {
 
     } catch (error) {
         console.error("Error in placeAsEditableSmartObject:", error);
-
-        // Cleanup temp doc on error
-        if (tempDoc) {
+        throw error;
+    } finally {
+        // Always remove our scratch canvas, including partial failures, and
+        // leave Photoshop focused on the original destination document.
+        if (tempDoc && isOpen(tempDoc)) {
             try {
-                await tempDoc.closeWithoutSaving();
+                app.activeDocument = tempDoc;
+                tempDoc.closeWithoutSaving();
             } catch (closeErr) {
-                console.warn("Failed to clean up temp document:", closeErr);
+                console.warn("Failed to close temporary placement document:", closeErr);
             }
         }
-
-        throw error;
+        if (isOpen(targetDoc)) app.activeDocument = targetDoc;
     }
 }
 

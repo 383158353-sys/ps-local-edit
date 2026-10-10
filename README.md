@@ -10,8 +10,8 @@ Photoshop 内的简洁 UXP 面板，通过 https://api.lk888.ai 调用生图模�
 - 多处改图可后台生成；顶部标签切换，关闭后在历史记录恢复。
 - 结果点击添加独立图层，按原坐标和尺寸回填；允许重复添加。
 - 图片右上角放大预览，预览内下载或右键保存原图。
-- 设置页保存 API Key、刷新 API 模型列表及手动管理模型 ID。
-- 语音按钮提示使用 Windows 的 Win+H 听写。
+- 模型菜单固定为原有五项和即梦 5.0 Pro、GK Image 2.0、千问 Image Max；检查 API 只核对这些预设，不会混入聊天等其他模型。
+- 语音按钮启动本机 Windows 中文听写，再点停止；文字插入修改要求。需启动本机语音助手，音频不上传到模型 API。
 
 ## 安装
 
@@ -23,14 +23,16 @@ Photoshop 内的简洁 UXP 面板，通过 https://api.lk888.ai 调用生图模�
 4. 在 RGB 文档选择区域，点击更新选区，输入要求后生成。
 5. 生成完成后点击候选图添加图层。放大查看与添加操作分开。
 
-密钥保存在本机 UXP secureStorage。模型列表可能包含聊天模型，只有平台支持的图像编辑模型才能完成改图。模型可用性、速度及费用以平台账号为准。一次生成多张会提交多个任务。
+Windows 上也可运行 `scripts/install-plugin-autoload.ps1` 添加登录启动项。启动后它会在 Photoshop 每次打开时重新注册开发版插件，无需手动运行 `打开局部改图插件.cmd`。这是本机开发加载的自动恢复入口，不等于 Adobe Marketplace 正式安装。
+
+密钥保存在本机 UXP secureStorage。模型 ID 以 LK888 API 返回为准；若某预设 ID 与账号提供的模型 ID 不一致，可在设置页配置自定义 ID。模型可用性、速度及费用以平台账号为准。一次生成多张会提交多个任务。
 
 ## 开发
 
 核心测试无需额外依赖，使用 Node.js 执行：
 
 ```sh
-node --test tests/api.test.cjs tests/panel.test.cjs tests/png.test.cjs
+node --test tests/api.test.cjs tests/panel.test.cjs tests/png.test.cjs tests/voice.test.cjs tests/prompt-editor.test.cjs
 ```
 
 Windows 打包：
@@ -48,3 +50,11 @@ Windows 打包：
 ## 来源与许可
 
 选区捕获、坐标变换、智能对象和蒙版模块复用 [FromPS / ToPS](https://github.com/dgl-10/PhotoshopPlugin)，版本 `2fc17b33f1406e39b73cb09d2042fb6acb248a68`。项目保留其 CC BY-NC-SA 4.0 许可及商业使用说明，见 [LICENSE](LICENSE) 与 [来源说明](plugin/NOTICE.md)。本适配版供个人非商业使用。
+
+## 本机语音输入（Windows）
+
+使用系统已安装的中文语音识别引擎，需允许桌面应用访问默认麦克风。先打开 PS，再双击根目录的 `打开局部改图插件.cmd`，该入口会启动本机语音服务并加载插件。服务仅监听 `127.0.0.1:17402`，只在点击语音时启用麦克风；再次点击停止，每次最多 60 秒。识别失败会显示原因，不会调用生图 API。关闭或切换改图、提交生成时会停止当前听写。离线引擎的识别质量取决于麦克风和语言包；也可使用 Win+H 或输入法听写。
+
+## 输入框与粘贴
+
+修改要求使用 PS 原生文本框，后台查询不会重建顶部标签或覆盖输入内容。Ctrl+V 或输入框右键菜单的“粘贴”可插入文字；复制的截图会添加为参考图。纯文字使用 UXP 剪贴板接口；截图读取通过本机 Windows 助手，仅在用户执行粘贴时读取剪贴板，不上传到识别服务。

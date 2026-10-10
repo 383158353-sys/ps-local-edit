@@ -1,6 +1,17 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { MediaClient, imageSources } = require('../plugin/api');
+const { MODELS, MediaClient, imageSources } = require('../plugin/api');
+
+test('keeps exactly the original five choices plus the three requested image models', () => {
+  assert.deepEqual(MODELS.map(model => model.id), ['banana-2','banana-pro','tt-image-2','tt-image-2.5','doubao-seedream-5-0-pro-260628','gk-image-2.0','qwen-image-max','custom']);
+});
+
+test('submits selected third-party image model ids unchanged', async () => {
+  const calls = [];
+  const api = new MediaClient('test-key', async (url, options) => { calls.push(JSON.parse(options.body)); return { ok: true, json: async () => ({ task_id: 'task-1' }) }; });
+  for (const model of ['doubao-seedream-5-0-pro-260628','gk-image-2.0','qwen-image-max']) await api.submit(model, '编辑图片', ['data:image/png;base64,YQ==']);
+  assert.deepEqual(calls.map(call => call.model), ['doubao-seedream-5-0-pro-260628','gk-image-2.0','qwen-image-max']);
+});
 
 test('image editing submits the source and references through LK888 media protocol', async () => {
   const calls = [];
@@ -15,6 +26,13 @@ test('an ambiguous submission failure is not retried', async () => {
   let count = 0;
   const api = new MediaClient('test-key', async () => { count++; throw new Error('network lost'); });
   await assert.rejects(api.submit('tt-image-2', 'edit', ['source']), /提交生图任务.*勿重复生成/);
+  assert.equal(count, 1);
+});
+
+test('explains LK888 gateway 502 without resubmitting the image task', async () => {
+  let count = 0;
+  const api = new MediaClient('test-key', async () => { count++; return { ok: false, status: 502, json: async () => ({}) }; });
+  await assert.rejects(api.submit('gk-image-2.0', '编辑图片', ['source']), /上游模型返回 502/);
   assert.equal(count, 1);
 });
 

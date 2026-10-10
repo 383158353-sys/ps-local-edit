@@ -1,10 +1,25 @@
 :root { --bg:#292929; --surface:#353535; --ink:#f2f2f2; --muted:#ccc; --line:#666; }
 * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font:13px "Segoe UI","Microsoft YaHei",sans-serif; } main { padding:14px; } header,.row { display:flex; align-items:center; justify-content:space-between; } header { margin-bottom:14px; } strong { font-size:15px; } label { display:block; margin:12px 0 6px; } label.inline { margin:0; } input,textarea { width:100%; padding:8px; color:var(--ink); background:var(--surface); border:1px solid var(--line); border-radius:4px; font:inherit; } textarea { height:110px; } input::placeholder,textarea::placeholder { color:var(--muted); } sp-dropdown { width:100%; } #generate { width:100%; margin-top:16px; } .row { margin:8px 0; flex-wrap:wrap; } .hint { font-size:11px; color:var(--muted); } .gate { padding:10px; background:#333; border:1px solid #555; border-radius:4px; } .gate p { margin:0 0 8px; } .images-row,.references { display:flex; flex-wrap:wrap; align-items:flex-start; } .thumb,.dropzone { position:relative; width:86px; height:96px; margin:6px 6px 0 0; border:1px solid #666; border-radius:4px; background:#353535; overflow:hidden; } .thumb img { width:84px; height:68px; object-fit:contain; } .thumb .hint { display:block; padding:3px; font-size:10px; } .badge { position:absolute; top:3px; left:3px; background:#222; color:white; padding:2px 5px; border-radius:3px; } .dropzone { border-style:dashed; display:flex; flex-direction:column; justify-content:center; align-items:center; width:104px; } .dropzone.dragging { border-color:#8ab4ff; } .options { display:flex; } .option { flex:1; min-width:0; } .option:first-child { margin-right:8px; flex:2; } #status { margin:12px 0 0; line-height:18px; } #status.error { color:#ffb6b6; } [hidden] { display:none; }
-.document-tabs { display:flex; flex-wrap:wrap; margin:-8px -8px 12px; border-bottom:1px solid #555; } .document-tabs sp-action-button { margin:2px; font-size:11px; }
-.tabs-bar { display:flex; align-items:flex-start; border-bottom:1px solid #555; margin-bottom:8px; } .tabs-bar .document-tabs { flex:1; margin:0; border:0; } .tab-item { display:flex; align-items:center; } .tabs-bar > sp-action-button { flex-shrink:0; margin-left:6px; } header { justify-content:flex-end; margin-bottom:0; } #history-list { border:1px solid #666; background:#353535; padding:4px; max-height:180px; overflow:auto; } #history-list sp-action-button { display:block; }
+.document-tabs { display:flex; flex-wrap:wrap; align-content:flex-start; align-items:center; min-width:0; max-height:58px; overflow-x:hidden; overflow-y:auto; } .document-tabs .tab-button { position:relative; display:inline-flex; flex:0 0 42px; align-items:center; justify-content:center; width:42px; height:28px; min-width:42px; padding:0; margin:2px; overflow:visible; font-size:12px; } .tab-button.active { background:#505050; } .tab-number { line-height:1; } .tab-close { display:none; position:absolute; top:1px; right:1px; z-index:2; align-items:center; justify-content:center; width:13px; height:13px; border-radius:50%; background:#222; color:#fff; font:12px/13px "Segoe UI",sans-serif; cursor:pointer; } .tab-button:hover .tab-close, .tab-button:focus .tab-close, .tab-close:focus { display:flex; }
+.tabs-bar { display:flex; align-items:flex-start; border-bottom:1px solid #555; margin-bottom:8px; } .tabs-bar .document-tabs { flex:1; margin:0; border:0; } .tabs-bar > sp-action-button { flex-shrink:0; height:25px; min-width:0; padding:0 6px; margin-left:4px; font-size:11px; } header { justify-content:flex-end; margin-bottom:0; } #history-list { border:1px solid #666; background:#353535; padding:4px; max-height:180px; overflow:auto; } #history-list sp-action-button { display:block; }
 
-.editor-toolbar { display:flex; align-items:center; flex-wrap:nowrap; margin:0 0 6px; min-height:28px; }
+.editor-toolbar { position:relative; display:flex; align-items:center; flex-wrap:nowrap; margin:0 0 6px; min-height:28px; }
 .editor-toolbar sp-action-button { flex-shrink:0; height:28px; min-width:0; padding:0 9px; margin:0; font-size:12px; border-radius:3px; }
 .toolbar-spacer { flex:1; min-width:8px; }
-.history-anchor { position:relative; flex-shrink:0; margin-right:6px; }
-#history-list { position:absolute; right:0; top:32px; z-index:10; width:200px; border-radius:3px; }
+.history-anchor { position:static; flex-shrink:0; margin-right:6px; }
+#history-list { position:absolute; right:0; top:32px; z-index:10; width:128px; max-height:132px; grid-template-columns:repeat(4,minmax(0,1fr)); gap:3px; border-radius:3px; }
+#history-list sp-action-button { display:flex; align-items:center; justify-content:center; width:25px; height:24px; min-width:0; padding:0; margin:0; font-size:11px; }
+
+#editor > label[for="prompt"] { margin:8px 0 3px; }
+.prompt-editor { position:relative; margin:0; padding:0; }
+.prompt-editor textarea { display:block; width:100%; height:94px; min-height:94px; max-height:94px; margin:0; padding:8px 8px 34px; appearance:none; -webkit-appearance:none; background:#353535; border:1px solid #666; border-radius:4px; box-shadow:none; outline:0; resize:none; }
+.prompt-editor textarea:focus { border-color:#4388d6; box-shadow:none; }
+.prompt-actions { position:absolute; right:4px; bottom:4px; display:flex; }
+.prompt-actions sp-action-button { height:26px; min-width:0; padding:0 7px; margin-left:4px; font-size:11px; }
+#expand-prompt { width:27px; padding:0; font-size:15px; }
+.prompt-editor.expanded { position:fixed; inset:8px; z-index:1000; display:flex; flex-direction:column; padding:34px 10px 42px; border:1px solid #777; border-radius:5px; background:#292929; box-shadow:0 8px 32px #000b; }
+.prompt-editor.expanded::before { content:"修改要求"; position:absolute; top:10px; left:12px; color:#f2f2f2; font-size:13px; }
+.prompt-editor.expanded textarea { flex:1; width:100%; height:auto; min-height:0; max-height:none; padding:8px; resize:none; }
+.prompt-editor.expanded .prompt-actions { right:8px; bottom:8px; }
+#input-notice { font-size:11px; color:#ccc; margin:3px 0 0; }
+#input-notice.error { color:#ffb6b6; }
