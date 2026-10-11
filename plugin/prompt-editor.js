@@ -29,6 +29,7 @@ class PromptEditor {
       expandButton.addEventListener('mousedown',event=>event.preventDefault());
       expandButton.addEventListener('click',()=>this.setExpanded(!this.container?.classList?.contains('expanded')));
     }
+    this.resize();
   }
   setExpanded(expanded){
     if(!this.container||!this.expandButton)return;
@@ -39,7 +40,14 @@ class PromptEditor {
     this.expandButton.setAttribute?.('aria-expanded',String(expanded));
     if(expanded)this.node.focus();
   }
-  changed(){this.onChange(this.node.value);}
+  changed(){this.resize();this.onChange(this.node.value);}
+  resize(){
+    if(!this.node.style)return;
+    this.node.style.height='56px';
+    const estimatedLines=String(this.node.value||'').split('\n').reduce((count,line)=>count+Math.max(1,Math.ceil(line.length/32)),0);
+    const measured=Number(this.node.scrollHeight)||estimatedLines*18+42;
+    this.node.style.height=Math.min(320,Math.max(56,measured))+'px';
+  }
   clipboardImage(event){
     const clipboard=event?.clipboardData;if(!clipboard)return null;
     const supported=type=>/^image\/(png|jpeg|webp)$/i.test(type||'');
@@ -102,6 +110,31 @@ class PromptEditor {
       this.onNotice(bridgeError?.message||'剪贴板里没有文字或截图。',!!bridgeError);
       if(typeof this.node.focus==='function')this.node.focus();
     }catch(error){this.onNotice(error.message||'粘贴失败，请重新复制后再试。',true);}
+    finally{this.pasting=false;}
+  }
+  async pasteImage(){
+    if(this.busy||this.pasting)return;
+    this.pasting=true;const context=this.context();
+    try{
+      let bridgeError=null;
+      try{
+        const data=await this.readImageClipboard();
+        if(context!==this.context()||this.busy)return;
+        if(typeof data.image==='string'){await this.onImage(data.image);this.onNotice('图片已添加到参考图。');return;}
+      }catch(error){bridgeError=error;}
+      let contents={};try{contents=await Promise.race([this.clipboard?.getContent()||Promise.resolve({}),new Promise(resolve=>setTimeout(()=>resolve({}),1200))]);}catch(_){}
+      if(context!==this.context()||this.busy)return;
+      for(const [type,value] of Object.entries(contents||{})){
+        if(!/^image\/(png|jpeg|webp)$/i.test(type))continue;
+        if(typeof value==='string'&&value.startsWith('data:image/')){await this.onImage(value);this.onNotice('截图已添加到参考图。');return;}
+        if(value instanceof ArrayBuffer||ArrayBuffer.isView(value)){
+          const bytes=value instanceof ArrayBuffer?new Uint8Array(value):new Uint8Array(value.buffer,value.byteOffset,value.byteLength);
+          let encoded='';for(const byte of bytes)encoded+=String.fromCharCode(byte);
+          await this.onImage('data:'+type.toLowerCase()+';base64,'+btoa(encoded));this.onNotice('截图已添加到参考图。');return;
+        }
+      }
+      throw bridgeError||new Error('剪贴板中没有图片，请先复制截图或图片文件。');
+    }catch(error){this.onNotice(error.message||'粘贴图片失败。',true);}
     finally{this.pasting=false;}
   }
   voice(data){

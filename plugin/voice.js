@@ -5,13 +5,13 @@ class VoiceController {
     this.session=null;this.epoch=0;this.timer=null;this.phase='idle';
   }
   update(state,message){this.phase=state;this.onState({state,message});}
-  async request(path,method='GET') {
-    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),path.startsWith('/clipboard')?25000:5000);
+  async request(path,method='GET',body=null) {
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),path.startsWith('/clipboard')||path.startsWith('/annotate')?25000:5000);
     try {
-      const response=await this.fetch('http://127.0.0.1:17402'+path,{method,signal:controller.signal,credentials:'omit',headers:{'X-PS-Local-Voice':'1'}});
+      const response=await this.fetch('http://127.0.0.1:17402'+path,{method,signal:controller.signal,credentials:'omit',headers:{'X-PS-Local-Voice':'1',...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});
       const data=await response.json();if(!response.ok)throw new Error(data.message||'本机语音服务异常。');return data;
     } catch(error) {
-      if(error.name==='AbortError'||/fetch|network|connect/i.test(error.message||''))throw new Error((path.startsWith('/clipboard')?'本机截图粘贴服务':'本机语音服务')+'未连接。请双击“打开局部改图插件.cmd”后重试。');
+      if(error.name==='AbortError'||/fetch|network|connect/i.test(error.message||''))throw new Error((path.startsWith('/clipboard')?'本机截图粘贴服务':path.startsWith('/drop')?'本机图片拖入服务':path.startsWith('/annotate')?'本机图片标注服务':'本机语音服务')+'未连接。请双击“打开局部改图插件.cmd”后重试。');
       throw error;
     } finally {clearTimeout(timer);}
   }

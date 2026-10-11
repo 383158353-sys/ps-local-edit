@@ -29,6 +29,19 @@ test('screenshot paste adds a reference without changing prompt or caret',async(
   h.input.selectionStart=h.input.selectionEnd=2;h.input.events.paste(pasteEvent());await flush();
   assert.deepEqual(h.images,['data:image/png;base64,YWJj']);assert.equal(h.input.value,'红色花瓶');assert.equal(h.input.selectionStart,2);
 });
+test('paste image action reads screenshot and never inserts clipboard text',async()=>{
+  const h=fixture({clipboard:{getContent:async()=>({'text/plain':'别改提示词'})},readImageClipboard:async()=>({image:'data:image/png;base64,YWJj'})});
+  await h.editor.pasteImage();
+  assert.deepEqual(h.images,['data:image/png;base64,YWJj']);
+  assert.equal(h.input.value,'红色花瓶');
+});
+test('prompt height follows its content and stops growing after the limit',()=>{
+  const h=fixture();h.input.style={};
+  Object.defineProperty(h.input,'scrollHeight',{get(){return this.value.length>500?600:this.value.length>50?148:56;}});
+  h.editor.resize();assert.equal(h.input.style.height,'56px');
+  h.input.value='文字'.repeat(30);h.editor.changed();assert.equal(h.input.style.height,'148px');
+  h.input.value='文字'.repeat(300);h.editor.changed();assert.equal(h.input.style.height,'320px');
+});
 
 test('Ctrl+V followed by a paste event inserts clipboard content exactly once',async()=>{
   let reads=0;const h=fixture({clipboard:{getContent:async()=>{reads++;return {'text/plain':'加上'};}}});

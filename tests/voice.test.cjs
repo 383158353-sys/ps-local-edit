@@ -82,3 +82,29 @@ test('voice session reports microphone level and distinguishes silence from reje
     assert.match(state.message,/检测到麦克风声音/);
   } finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
+test('local drop window sends images into the panel polling queue',async()=>{
+  const launched=[];const server=createVoiceServer({spawnWorker:()=>{const child=fakeChild();setImmediate(()=>child.emit('exit',0));return child;},dropWindowLauncher:id=>{launched.push(id);return fakeChild();}});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const base='http://127.0.0.1:'+server.address().port,headers={'X-PS-Local-Voice':'1'};
+  try{
+    const opened=await(await fetch(base+'/drop/open',{method:'POST',headers})).json();assert.equal(launched[0],opened.id);
+    const image={name:'测试.png',data:'data:image/png;base64,YWJj'};
+    const upload=await fetch(base+'/drop/upload?id='+opened.id,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({references:[image]})});assert.equal(upload.status,200);
+    const first=await(await fetch(base+'/drop/poll?id='+opened.id,{headers})).json();assert.deepEqual(first.references,[image]);
+    const second=await(await fetch(base+'/drop/poll?id='+opened.id,{headers})).json();assert.deepEqual(second.references,[]);
+    const bad=await fetch(base+'/drop/upload?id='+opened.id,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({references:[{name:'x',data:'file:///secret'}]})});assert.equal(bad.status,400);
+  }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+});
+test('local annotation window returns a saved PNG exactly once',async()=>{
+  const launched=[];const server=createVoiceServer({spawnWorker:()=>{const child=fakeChild();setImmediate(()=>child.emit('exit',0));return child;},annotationWindowLauncher:id=>{launched.push(id);return fakeChild();}});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const base='http://127.0.0.1:'+server.address().port,headers={'X-PS-Local-Voice':'1','Content-Type':'application/json'};
+  try{
+    const image='data:image/png;base64,YWJj';
+    const opened=await(await fetch(base+'/annotate/open',{method:'POST',headers,body:JSON.stringify({image})})).json();assert.equal(launched[0],opened.id);
+    const waiting=await(await fetch(base+'/annotate/poll?id='+opened.id,{headers})).json();assert.equal(waiting.state,'waiting');
+    const saved=await fetch(base+'/annotate/save?id='+opened.id,{method:'POST',headers,body:JSON.stringify({image})});assert.equal(saved.status,200);
+    const done=await(await fetch(base+'/annotate/poll?id='+opened.id,{headers})).json();assert.equal(done.state,'saved');assert.equal(done.image,image);
+    assert.equal((await fetch(base+'/annotate/poll?id='+opened.id,{headers})).status,404);
+  }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+});

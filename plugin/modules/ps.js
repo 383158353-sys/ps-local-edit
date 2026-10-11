@@ -1242,10 +1242,9 @@ async function placeBack(placeBackMode, fileToken, bounds, maskImageData, feathe
             let placedImageHeight = 0;
 
             if (CREATE_EDITABLE_SMART_OBJECTS) {
-                // NEW PATH: High-Res Editable Smart Object via Temp Document 
-                // useful when pasted image is larger than the document. 
-                // it prevents automatic resizing of pasted image
-                console.log("Using High-Res Editable Smart Object path...");
+                // Place directly in the working document. The embedded Smart Object
+                // retains its source pixels even if Photoshop scales its display to fit.
+                console.log("Using direct editable Smart Object placement...");
                 const result = await placeAsEditableSmartObject(fileToken, bounds, doc);
                 placedImageWidth = result.placedImageWidth;
                 placedImageHeight = result.placedImageHeight;
@@ -1414,9 +1413,10 @@ async function placeBack(placeBackMode, fileToken, bounds, maskImageData, feathe
 }
 
 /**
- * Places an image into a temporary large document to prevent downscaling,
- * rasterizes it at 100% resolution, converts it to a Smart Object,
- * and duplicates it back to the target document.
+ * Places an embedded Smart Object directly into the working document.
+ * Photoshop may initially scale the displayed layer to fit the canvas, but
+ * the embedded image remains at its original resolution. Transform the layer
+ * to the capture bounds without opening or switching to a scratch document.
  * 
  * @param {string} fileToken - File path or token for the image
  * @param {object} bounds - Target bounds in the destination document
@@ -1424,119 +1424,34 @@ async function placeBack(placeBackMode, fileToken, bounds, maskImageData, feathe
  * @returns {Promise<{placedImageWidth: number, placedImageHeight: number}>}
  */
 async function placeAsEditableSmartObject(fileToken, bounds, targetDoc) {
-    const { app, core, action } = require("photoshop");
+    const { app, action } = require("photoshop");
 
-    console.log("Creating temporary document for high-res Smart Object placement...");
-    let tempDoc = null;
-    const isOpen = (document) => {
-        if (!document || !app.documents) return false;
-        for (let index = 0; index < app.documents.length; index++) {
-            if (app.documents[index].id === document.id) return true;
-        }
-        return false;
-    };
-
-    try {
-        // Create an 8000x8000 temporary document
-        tempDoc = await app.documents.add({
-            width: 8000,
-            height: 8000,
-            resolution: 72,
-            mode: "RGBColorMode",
-            fill: "transparent"
-        });
-
-        // Step 1: Place Event (will be 100% scale because canvas is huge)
-        await action.batchPlay([
-            {
-                _obj: "placeEvent",
-                null: {
-                    _path: fileToken,
-                    _kind: "local"
-                }
-            }
-        ], { synchronousExecution: true });
-
-        // Step 2: Rasterize (Bakes at 100% resolution)
-        await action.batchPlay([
-            {
-                _obj: "rasterizeLayer",
-                _target: [
-                    { _ref: "layer", _enum: "ordinal", _value: "targetEnum" }
-                ]
-            }
-        ], { synchronousExecution: true });
-
-        // Step 3: Convert to Smart Object
-        await action.batchPlay([
-            {
-                _obj: "newPlacedLayer"
-            }
-        ], { synchronousExecution: true });
-
-        // Step 4: Duplicate the Smart Object to the original document
-        // CRITICAL BUG FIX: If the target document has an active selection, Photoshop will
-        // automatically try to center the duplicated layer on that selection, throwing off
-        // our absolute coordinate calculations later. We must deselect in the target document first.
-
-        targetDoc.activeLayers = []; // Safety clear
-        try {
-            // Activate the target document briefly to clear its selection
-            app.activeDocument = targetDoc;
-            if (targetDoc.selection) {
-                await targetDoc.selection.deselect();
-            }
-            // Switch back to temp document for the duplicate operation
-            app.activeDocument = tempDoc;
-
-            console.log("Cleared selection in target document to prevent duplicate auto-centering.");
-        } catch (e) {
-            // No selection existed, or failed. Ignore.
-            console.log("No selection to clear, or error clearing:", e);
-        }
-
-        const smartObjectLayer = tempDoc.activeLayers[0];
-        const duplicatedLayer = await smartObjectLayer.duplicate(targetDoc);
-
-        // Duplicate can activate the destination document. Explicitly activate
-        // the temporary document before closing it so Photoshop never closes
-        // the user's working document by active-tab side effect.
-        if (!isOpen(targetDoc)) throw new Error("目标 Photoshop 文档已关闭，未能放回生成图层。");
-        if (isOpen(tempDoc)) {
-            app.activeDocument = tempDoc;
-            tempDoc.closeWithoutSaving();
-        }
-        tempDoc = null;
-
-        // Step 6: Select the duplicated layer in the target document
-        if (!isOpen(targetDoc)) throw new Error("目标 Photoshop 文档已关闭，未能放回生成图层。");
-        app.activeDocument = targetDoc;
-        targetDoc.activeLayers = [duplicatedLayer];
-
-        // Step 7: Calculate Transformation bounds
-        const dimensions = await transformLayerToBounds(duplicatedLayer, bounds);
-
-        return {
-            placedImageWidth: dimensions.width,
-            placedImageHeight: dimensions.height
-        };
-
-    } catch (error) {
-        console.error("Error in placeAsEditableSmartObject:", error);
-        throw error;
-    } finally {
-        // Always remove our scratch canvas, including partial failures, and
-        // leave Photoshop focused on the original destination document.
-        if (tempDoc && isOpen(tempDoc)) {
-            try {
-                app.activeDocument = tempDoc;
-                tempDoc.closeWithoutSaving();
-            } catch (closeErr) {
-                console.warn("Failed to close temporary placement document:", closeErr);
-            }
-        }
-        if (isOpen(targetDoc)) app.activeDocument = targetDoc;
+    if (app.activeDocument.id !== targetDoc.id) {
+        throw new Error("目标 Photoshop 文档已切换，请重新贴图。");
     }
+
+    // A live selection changes Photoshop's placement centre. The saved mask
+    // is reapplied later by placeBack, after the layer reaches its final bounds.
+    if (targetDoc.selection && targetDoc.selection.bounds) {
+        await targetDoc.selection.deselect();
+    }
+
+    await action.batchPlay([{
+        _obj: "placeEvent",
+        null: { _path: fileToken, _kind: "local" },
+        linked: false
+    }], { synchronousExecution: true });
+
+    const placedLayer = targetDoc.activeLayers[0];
+    if (!placedLayer) {
+        throw new Error("贴图完成后未找到新图层。");
+    }
+
+    const dimensions = await transformLayerToBounds(placedLayer, bounds);
+    return {
+        placedImageWidth: dimensions.width,
+        placedImageHeight: dimensions.height
+    };
 }
 
 /**

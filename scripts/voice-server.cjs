@@ -34,9 +34,17 @@ function readClipboard() {
     child.on('exit',()=>{clearTimeout(timer);try{const data=JSON.parse(output.trim());if(data.error)reject(new Error(data.error));else resolve(data);}catch(_){reject(new Error('读取剪贴板失败。'));}});
   });
 }
-function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboard } = {}) {
+function openDropWindow(id) {
+  return spawn('powershell.exe',['-NoProfile','-Sta','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',path.join(__dirname,'drop-window.ps1'),'-SessionId',id],{windowsHide:true,stdio:'ignore'});
+}
+function openAnnotationWindow(id) {
+  return spawn('powershell.exe',['-NoProfile','-Sta','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',path.join(__dirname,'annotation-window.ps1'),'-SessionId',id],{windowsHide:true,stdio:'ignore'});
+}
+function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboard, dropWindowLauncher = openDropWindow, annotationWindowLauncher = openAnnotationWindow } = {}) {
   let active = null, readiness = { state: 'starting' };
   const sessions = new Map();
+  const dropSessions = new Map();
+  const annotationSessions = new Map();
   const probe = spawnWorker(true);
   const probeTimer = setTimeout(() => { readiness = {state:'error', message:'中文语音引擎检查超时。'}; probe.kill(); }, 15000);
   readEvents(probe, event => {
@@ -73,6 +81,41 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
     if (url.pathname === '/clipboard' && request.method === 'GET') {
       clipboardReader().then(data=>reply(200,data)).catch(error=>reply(500,{message:error.message}));
       return;
+    }
+    if(url.pathname==='/drop/open'&&request.method==='POST'){
+      for(const [id,session] of dropSessions)if(Date.now()-session.createdAt>180000)dropSessions.delete(id);
+      const id=randomUUID();dropSessions.set(id,{createdAt:Date.now(),references:[]});
+      try{const child=dropWindowLauncher(id);child?.on?.('error',()=>dropSessions.delete(id));return reply(200,{id});}
+      catch(_){dropSessions.delete(id);return reply(500,{message:'无法打开本机拖入窗口。'});}
+    }
+    if(url.pathname==='/drop/upload'&&request.method==='POST'){
+      const session=dropSessions.get(url.searchParams.get('id'));
+      if(!session||Date.now()-session.createdAt>180000)return reply(404,{message:'拖入窗口已过期，请重新打开。'});
+      let body='';request.setEncoding('utf8');request.on('data',chunk=>{body+=chunk;if(body.length>72*1024*1024)request.destroy();});
+      request.on('end',()=>{try{const value=JSON.parse(body),refs=value.references;if(!Array.isArray(refs)||refs.length<1||refs.length>5)throw Error('图片数量无效。');for(const ref of refs){if(typeof ref.name!=='string'||typeof ref.data!=='string'||ref.data.length>14*1024*1024||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(ref.data))throw Error('图片格式或大小无效。');}session.references.push(...refs.map(ref=>({name:ref.name.slice(0,150),data:ref.data})));reply(200,{state:'received',count:refs.length});}catch(error){reply(400,{message:error.message||'图片无效。'});}});return;
+    }
+    if(url.pathname==='/drop/poll'&&request.method==='GET'){
+      const session=dropSessions.get(url.searchParams.get('id'));
+      if(!session||Date.now()-session.createdAt>180000)return reply(404,{message:'拖入窗口已过期，请重新打开。'});
+      const references=session.references.splice(0);return reply(200,{references});
+    }
+    if(url.pathname==='/annotate/open'&&request.method==='POST'){
+      let body='';request.setEncoding('utf8');request.on('data',chunk=>{body+=chunk;if(body.length>14*1024*1024)request.destroy();});
+      request.on('end',()=>{try{const image=JSON.parse(body).image;if(typeof image!=='string'||image.length>14*1024*1024||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(image))throw Error('标注图片无效或过大。');for(const [id,session] of annotationSessions)if(Date.now()-session.createdAt>600000)annotationSessions.delete(id);const id=randomUUID(),session={createdAt:Date.now(),image,result:null,error:null};annotationSessions.set(id,session);const child=annotationWindowLauncher(id);child?.on?.('error',()=>{session.error='本机标注窗口启动失败。';});child?.on?.('exit',()=>{if(!session.result)session.error='标注窗口已关闭，未保存图片。';});reply(200,{id});}catch(error){reply(400,{message:error.message||'无法打开标注窗口。'});}});return;
+    }
+    if(url.pathname.startsWith('/annotate/')){
+      const id=url.searchParams.get('id'),session=annotationSessions.get(id);
+      if(!session||Date.now()-session.createdAt>600000)return reply(404,{message:'标注会话已结束。'});
+      if(url.pathname==='/annotate/image'&&request.method==='GET')return reply(200,{image:session.image});
+      if(url.pathname==='/annotate/poll'&&request.method==='GET'){
+        if(session.error){const message=session.error;annotationSessions.delete(id);return reply(200,{state:'error',message});}
+        if(!session.result)return reply(200,{state:'waiting'});
+        const image=session.result;annotationSessions.delete(id);return reply(200,{state:'saved',image});
+      }
+      if(url.pathname==='/annotate/save'&&request.method==='POST'){
+        let body='';request.setEncoding('utf8');request.on('data',chunk=>{body+=chunk;if(body.length>14*1024*1024)request.destroy();});
+        request.on('end',()=>{try{const image=JSON.parse(body).image;if(typeof image!=='string'||image.length>14*1024*1024||!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(image))throw Error('标注结果无效或过大。');session.result=image;reply(200,{state:'saved'});}catch(error){reply(400,{message:error.message||'保存标注失败。'});}});return;
+      }
     }
     if (url.pathname === '/start' && request.method === 'POST') {
       if (readiness.state !== 'ready') return reply(503,{message:readiness.message || '中文语音引擎启动中，请稍后重试。'});
