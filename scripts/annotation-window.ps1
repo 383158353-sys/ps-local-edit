@@ -12,7 +12,6 @@ $stream=[System.IO.MemoryStream]::new($bytes)
 $script:base=[System.Drawing.Bitmap]::new($stream)
 $script:marks=[System.Collections.ArrayList]::new()
 $script:draft=$null
-$script:tool='arrow'
 $script:color=[System.Drawing.Color]::FromArgb(255,64,64)
 $script:penWidth=[Math]::Max(3,[Math]::Round($script:base.Width/250))
 function Point-FromMouse($e){
@@ -23,21 +22,10 @@ function Draw-One($g,$mark){
   $p.StartCap=$p.EndCap=[System.Drawing.Drawing2D.LineCap]::Round
   try{
     $a=$mark.start;$b=$mark.end
-    switch($mark.tool){
-      'pen'{if($mark.points.Count -gt 1){$g.DrawLines($p,[System.Drawing.PointF[]]$mark.points)}}
-      'circle'{$g.DrawEllipse($p,[single][Math]::Min($a.X,$b.X),[single][Math]::Min($a.Y,$b.Y),[single][Math]::Max(1,[Math]::Abs($b.X-$a.X)),[single][Math]::Max(1,[Math]::Abs($b.Y-$a.Y)))}
-      'text'{
-        $font=[System.Drawing.Font]::new('Microsoft YaHei',[single][Math]::Max(22,$script:base.Width/28),[System.Drawing.FontStyle]::Bold)
-        $brush=[System.Drawing.SolidBrush]::new($mark.color)
-        try{$g.DrawString($mark.text,$font,$brush,$a)}finally{$font.Dispose();$brush.Dispose()}
-      }
-      default{
-        $g.DrawLine($p,$a,$b)
-        $angle=[Math]::Atan2($b.Y-$a.Y,$b.X-$a.X);$len=[Math]::Max(18,$script:base.Width/35)
-        $g.DrawLine($p,$b,[System.Drawing.PointF]::new([single]($b.X-$len*[Math]::Cos($angle-.5)),[single]($b.Y-$len*[Math]::Sin($angle-.5))))
-        $g.DrawLine($p,$b,[System.Drawing.PointF]::new([single]($b.X-$len*[Math]::Cos($angle+.5)),[single]($b.Y-$len*[Math]::Sin($angle+.5))))
-      }
-    }
+    $g.DrawLine($p,$a,$b)
+    $angle=[Math]::Atan2($b.Y-$a.Y,$b.X-$a.X);$len=[Math]::Max(18,$script:base.Width/35)
+    $g.DrawLine($p,$b,[System.Drawing.PointF]::new([single]($b.X-$len*[Math]::Cos($angle-.5)),[single]($b.Y-$len*[Math]::Sin($angle-.5))))
+    $g.DrawLine($p,$b,[System.Drawing.PointF]::new([single]($b.X-$len*[Math]::Cos($angle+.5)),[single]($b.Y-$len*[Math]::Sin($angle+.5))))
   }finally{$p.Dispose()}
 }
 function Draw-All($g){foreach($mark in $script:marks){Draw-One $g $mark};if($script:draft){Draw-One $g $script:draft}}
@@ -67,9 +55,7 @@ $toolbar=New-Object System.Windows.Forms.FlowLayoutPanel
 $toolbar.Dock='Bottom';$toolbar.Height=39;$toolbar.WrapContents=$false;$toolbar.AutoScroll=$true;$toolbar.BackColor=[System.Drawing.Color]::White
 $topPanel.Controls.Add($toolbar)
 function Style-Button($button){$button.FlatStyle='Flat';$button.FlatAppearance.BorderColor=[System.Drawing.Color]::FromArgb(221,221,221);$button.BackColor=[System.Drawing.Color]::FromArgb(248,248,248);$button.ForeColor=[System.Drawing.Color]::FromArgb(35,35,35);$button.Font=[System.Drawing.Font]::new('Microsoft YaHei',8)}
-function Add-Tool($label,$name){$button=New-Object System.Windows.Forms.Button;$button.Text=$label;$button.Width=58;$button.Height=28;$button.Tag=$name;Style-Button $button;if($name -eq 'arrow'){$button.BackColor=[System.Drawing.Color]::FromArgb(30,30,30);$button.ForeColor=[System.Drawing.Color]::White};$button.Add_Click({$script:tool=[string]$this.Tag;foreach($item in $toolbar.Controls){if($item.Tag -in @('circle','arrow','pen','text')){$item.BackColor=[System.Drawing.Color]::FromArgb(248,248,248);$item.ForeColor=[System.Drawing.Color]::FromArgb(35,35,35)}};$this.BackColor=[System.Drawing.Color]::FromArgb(30,30,30);$this.ForeColor=[System.Drawing.Color]::White}.GetNewClosure());$toolbar.Controls.Add($button)|Out-Null}
-Add-Tool '○ 圆圈' 'circle';Add-Tool '↗ 箭头' 'arrow';Add-Tool '✎ 画笔' 'pen';Add-Tool 'T 文字' 'text'
-$textBox=New-Object System.Windows.Forms.TextBox;$textBox.Width=76;$textBox.Height=28;$textBox.Text='文字';$toolbar.Controls.Add($textBox)|Out-Null
+$arrow=New-Object System.Windows.Forms.Button;$arrow.Text='↗ 箭头';$arrow.Width=58;$arrow.Height=28;Style-Button $arrow;$arrow.BackColor=[System.Drawing.Color]::FromArgb(30,30,30);$arrow.ForeColor=[System.Drawing.Color]::White;$toolbar.Controls.Add($arrow)|Out-Null
 $colorButton=New-Object System.Windows.Forms.Button;$colorButton.Text='颜色';$colorButton.Width=43;$colorButton.Height=28;Style-Button $colorButton;$colorButton.Add_Click({$dialog=New-Object System.Windows.Forms.ColorDialog;$dialog.Color=$script:color;if($dialog.ShowDialog() -eq 'OK'){$script:color=$dialog.Color}});$toolbar.Controls.Add($colorButton)|Out-Null
 $undo=New-Object System.Windows.Forms.Button;$undo.Text='撤销';$undo.Width=43;$undo.Height=28;Style-Button $undo;$undo.Add_Click({if($script:marks.Count){$script:marks.RemoveAt($script:marks.Count-1);$script:surface.Invalidate()}});$toolbar.Controls.Add($undo)|Out-Null
 $clear=New-Object System.Windows.Forms.Button;$clear.Text='清空';$clear.Width=43;$clear.Height=28;Style-Button $clear;$clear.Add_Click({$script:marks.Clear();$script:surface.Invalidate()});$toolbar.Controls.Add($clear)|Out-Null
@@ -78,7 +64,7 @@ $footer.Dock='Bottom';$footer.Height=47;$footer.FlowDirection='RightToLeft';$foo
 $form.Controls.Add($footer)
 $save=New-Object System.Windows.Forms.Button;$save.Text='✓ 完成标注';$save.Width=100;$save.Height=31;$save.FlatStyle='Flat';$save.BackColor=[System.Drawing.Color]::FromArgb(25,25,25);$save.ForeColor=[System.Drawing.Color]::White;$footer.Controls.Add($save)|Out-Null
 $cancel=New-Object System.Windows.Forms.Button;$cancel.Text='取消';$cancel.Width=55;$cancel.Height=31;Style-Button $cancel;$cancel.Add_Click({$form.Close()});$footer.Controls.Add($cancel)|Out-Null
-$footerHint=New-Object System.Windows.Forms.Label;$footerHint.Text='拖动画箭头、圆圈或画笔；文字工具点击图片放置。';$footerHint.Width=300;$footerHint.Height=31;$footerHint.TextAlign='MiddleLeft';$footerHint.ForeColor=[System.Drawing.Color]::Gray;$footer.Controls.Add($footerHint)|Out-Null
+$footerHint=New-Object System.Windows.Forms.Label;$footerHint.Text='在图片上拖动绘制箭头。';$footerHint.Width=300;$footerHint.Height=31;$footerHint.TextAlign='MiddleLeft';$footerHint.ForeColor=[System.Drawing.Color]::Gray;$footer.Controls.Add($footerHint)|Out-Null
 $hostPanel=New-Object System.Windows.Forms.Panel
 $hostPanel.Dock='Fill';$hostPanel.AutoScroll=$true;$hostPanel.BackColor=[System.Drawing.Color]::FromArgb(240,240,240)
 $form.Controls.Add($hostPanel)
@@ -97,12 +83,10 @@ $script:surface.Add_Paint({param($sender,$e)
 $script:surface.Add_MouseDown({param($sender,$e)
   if($e.Button -ne [System.Windows.Forms.MouseButtons]::Left){return}
   $point=Point-FromMouse $e
-  if($script:tool -eq 'text'){$value=$textBox.Text.Trim();if($value){[void]$script:marks.Add(@{tool='text';start=$point;end=$point;color=$script:color;text=$value.Substring(0,[Math]::Min(100,$value.Length))});$script:surface.Invalidate()};return}
-  $script:draft=@{tool=$script:tool;start=$point;end=$point;color=$script:color;points=[System.Collections.ArrayList]::new()}
-  [void]$script:draft.points.Add($point);$script:surface.Capture=$true
+  $script:draft=@{start=$point;end=$point;color=$script:color};$script:surface.Capture=$true
 })
 $script:surface.Add_MouseMove({param($sender,$e)
-  if(-not $script:draft){return};$point=Point-FromMouse $e;$script:draft.end=$point;if($script:draft.tool -eq 'pen'){[void]$script:draft.points.Add($point)};$script:surface.Invalidate()
+  if(-not $script:draft){return};$script:draft.end=Point-FromMouse $e;$script:surface.Invalidate()
 })
 $script:surface.Add_MouseUp({param($sender,$e)
   if($script:draft){$script:draft.end=Point-FromMouse $e;[void]$script:marks.Add($script:draft);$script:draft=$null;$script:surface.Capture=$false;$script:surface.Invalidate()}
