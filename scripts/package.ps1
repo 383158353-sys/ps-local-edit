@@ -4,7 +4,7 @@ $taskRoot = Split-Path -Parent $PSScriptRoot
 $taskPlugin = Join-Path $taskRoot 'plugin'
 $taskDist = Join-Path $taskRoot 'dist'
 New-Item -ItemType Directory -Path $taskDist -Force | Out-Null
-$taskPackage = Join-Path $taskDist '局部改图-LK888-0.1.0.ccx'
+$taskPackage = Join-Path $taskDist '局部改图-LK888-0.1.1.ccx'
 $taskStream = [System.IO.File]::Open($taskPackage, [System.IO.FileMode]::Create)
 $taskArchive = [System.IO.Compression.ZipArchive]::new($taskStream, [System.IO.Compression.ZipArchiveMode]::Create)
 try {

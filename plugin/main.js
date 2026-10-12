@@ -7,14 +7,37 @@ const { TaskQueue }=require('./task-queue');
 const { pngRGBA }=require('./png');
 const { VoiceController }=require('./voice');
 const { PromptEditor }=require('./prompt-editor');
+const { OptimizerClient }=require('./optimizer');
 const { closestStandardAspect, closestStandardImageSize }=require('./modules/geometry');
 const LOCAL_EDIT_EDGE_FEATHER={enabled:true,bias:-1,relative:0.015,minRadius:1,maxRadius:3};
 let queue=null, pageName='edit', selectedJobId=null, historyOpen=false, clearHistoryArmed=false;
-let promptEditor=null,tabsSignature='',historySignature='';
+let promptEditor=null,tabsSignature='',historySignature='',optimizing=false,optimizeEpoch=0,lastPromptBeforeOptimize=null,undoOptimizeTimer=null,applyingOptimizedPrompt=false;
 const resultDownloads=new Map();
 const voice=new VoiceController({context:()=>selectedJobId,onState:data=>promptEditor?.voice(data),onText:text=>promptEditor?.insert(text)});
+const optimizer=new OptimizerClient();
+function clearOptimizeUndo(){clearTimeout(undoOptimizeTimer);undoOptimizeTimer=null;lastPromptBeforeOptimize=null;if(typeof document!=='undefined')show('undo-optimize',false);}
+function cancelOptimization(){if(!optimizing)return;optimizer.cancel();optimizing=false;++optimizeEpoch;refresh();}
+async function optimizePrompt(){
+ if(optimizing){cancelOptimization();status('已取消优化。');return;}
+ const text=$('prompt').value.trim();if(!text&&!sourceImage){status('先读取选区或写修改要求。',true);return;}
+ voice.cancel();clearOptimizeUndo();const context=selectedJobId,epoch=++optimizeEpoch,original=$('prompt').value;
+ const images=[...(sourceImage?[{name:'选区.png',data:sourceImage}]:[]),...references.map((item,index)=>({name:item.name||`参考图${index+2}.png`,data:item.data}))];
+ const target=['banana-2','banana-pro'].includes($('model').value)?'banana2':'generic_image';
+ optimizing=true;refresh();
+ try{
+  const result=await optimizer.optimize({text,images,target});
+  if(epoch!==optimizeEpoch||context!==selectedJobId)return;
+  lastPromptBeforeOptimize={context,text:original};applyingOptimizedPrompt=true;$('prompt').value=result.prompt||'';promptEditor.changed();applyingOptimizedPrompt=false;
+  await saveCurrent();show('undo-optimize',true,'inline-block');undoOptimizeTimer=setTimeout(clearOptimizeUndo,10000);status('已优化，可按 Ctrl+Z 或点「撤销优化」恢复原文。');
+ }catch(error){if(epoch===optimizeEpoch&&!/已取消优化/.test(error.message||''))status(error.message||'优化失败。',true);}
+ finally{if(epoch===optimizeEpoch){optimizing=false;refresh();}}
+}
+async function undoOptimization(){
+ if(!lastPromptBeforeOptimize||lastPromptBeforeOptimize.context!==selectedJobId)return;
+ const value=lastPromptBeforeOptimize.text;clearOptimizeUndo();applyingOptimizedPrompt=true;$('prompt').value=value;promptEditor.changed();applyingOptimizedPrompt=false;await saveCurrent();status('已恢复优化前的修改要求。');
+}
 async function saveCurrent(){const record=queue?.jobs.find(j=>j.id===selectedJobId);if(!record)return;record.prompt=$('prompt').value;record.model=$('model').value||record.model;record.quality=$('quality').value||'auto';record.ratio=$('output-size').value||'original';record.count=Number($('count').value)||1;if(capture&&sourceImage){await snapshot(record.captureRef);record.captureWidth=capture.bounds.width;record.captureHeight=capture.bounds.height;}queue.save();}
-async function newDraft(){voice.cancel();await saveCurrent();const number=Math.max(0,...queue.jobs.map(j=>j.number||0))+1,id='region-'+Date.now();queue.jobs.unshift({id,captureRef:id,title:'局部改图 '+number,number,createdAt:Date.now(),state:'draft',tasks:[],prompt:'',count:1});selectedJobId=id;capture=null;sourceImage=null;references=[];$('prompt').value='';promptEditor?.resize();queue.save();show('selection-gate',true);navigatePage('edit');syncInputs();status('新建改图：请读取选区。');}
+async function newDraft(){voice.cancel();cancelOptimization();clearOptimizeUndo();await saveCurrent();const number=Math.max(0,...queue.jobs.map(j=>j.number||0))+1,id='region-'+Date.now();queue.jobs.unshift({id,captureRef:id,title:'局部改图 '+number,number,createdAt:Date.now(),state:'draft',tasks:[],prompt:'',count:1});selectedJobId=id;capture=null;sourceImage=null;references=[];$('prompt').value='';promptEditor?.resize();queue.save();show('selection-gate',true);navigatePage('edit');syncInputs();status('新建改图：请读取选区。');}
 const fs = storage.localFileSystem;
 let capture = null, reference = null, busy = false, initialized = false;
 let job = null;
@@ -103,11 +126,12 @@ function matchesTaskDocument(doc, region){
 }
 function saveJob() { if (job) localStorage.setItem('lk888-job', JSON.stringify(job)); else localStorage.removeItem('lk888-job'); }
 function refresh() {
-  $('generate').disabled = busy;
+  $('generate').disabled = busy || optimizing;
   $('generate').textContent = busy ? '正在提交 / 添加…' : '生成';
   $('quality').disabled = busy; $('count').disabled = busy; $('output-size').disabled = busy;
   show('pause-wait',false);
-  $('model').disabled = busy; if(promptEditor)promptEditor.setBusy(busy);else $('prompt').disabled=busy;
+  $('model').disabled = busy || optimizing; if(promptEditor)promptEditor.setBusy(busy || optimizing);else $('prompt').disabled=busy || optimizing;
+  if($('optimize-prompt')){$('optimize-prompt').textContent=optimizing?'停止优化':'✨ 优化';$('optimize-prompt').disabled=busy;}
   $('add-reference').disabled = busy; $('clear-reference').disabled = busy;
   show('recovery',false);
   $('resume').disabled = busy || !job || !job.taskId;
@@ -259,7 +283,7 @@ function tasksUI(){
   if(document.createElement && nextHistory!==historySignature){historySignature=nextHistory;history.innerHTML='';queue.jobs.forEach((record,index)=>{const number=record.number??(Number(record.title.match(/\d+$/)?.[0])||index+1),item=document.createElement('sp-action-button');item.textContent=String(number);item.title=record.title+(record.closed?' · 已关闭':'');item.setAttribute('aria-label',item.title);item.addEventListener('click',()=>withBusy(()=>openHistory(record.id)));history.appendChild(item);});if(queue.jobs.length){const clear=document.createElement('sp-action-button');clear.className='clear-history'+(clearHistoryArmed?' armed':'');clear.textContent=clearHistoryArmed?'确认清空全部记录':'清空历史记录';clear.addEventListener('click',onClearHistoryClick);history.appendChild(clear);}}
  show('history-list',historyOpen&&pageName!=='settings','grid');const historyLabel='历史记录 ('+queue.jobs.length+')';if($('tab-tasks').textContent!==historyLabel)$('tab-tasks').textContent=historyLabel;const selected=queue.jobs.find(j=>j.id===selectedJobId);$('panel-title').textContent=selected?.title||'局部改图';
 }
-function navigatePage(page){if(page==='settings')voice.cancel();pageName=page;show('editor',page!=='settings');show('task-page',true);show('settings',page==='settings');show('page-tabs',true,'flex');show('refresh-selection',page!=='settings','inline-block');show('tab-tasks',page!=='settings','inline-block');$('settings-toggle').textContent=page==='settings'?'返回':'设置';tasksUI();}
+function navigatePage(page){if(page==='settings'){voice.cancel();cancelOptimization();}pageName=page;show('editor',page!=='settings');show('task-page',true);show('settings',page==='settings');show('page-tabs',true,'flex');show('refresh-selection',page!=='settings','inline-block');show('tab-tasks',page!=='settings','inline-block');$('settings-toggle').textContent=page==='settings'?'返回':'设置';tasksUI();}
 async function snapshot(id){const folder=await fs.getDataFolder(),meta=await folder.createFile(id+'.json',{overwrite:true}),mask=await folder.createFile(id+'.bin',{overwrite:true});const bytes=capture.maskData.imageData;await mask.write(bytes.buffer?bytes.buffer.slice(bytes.byteOffset||0,(bytes.byteOffset||0)+bytes.byteLength):bytes,{format:storage.formats.binary});await meta.write(JSON.stringify({bounds:capture.bounds,aspectRatio:capture.aspectRatio,aspectRatioMatched:capture.aspectRatioMatched,context:capture.context,documentWidth:capture.documentWidth,documentHeight:capture.documentHeight,sourceImage,references,mask:{width:capture.maskData.width,height:capture.maskData.height,components:1,sourceBounds:capture.maskData.sourceBounds}}));}
 async function restoreCapture(id){const folder=await fs.getDataFolder(),meta=JSON.parse(await(await folder.getEntry(id+'.json')).read()),bytes=await(await folder.getEntry(id+'.bin')).read({format:storage.formats.binary});return {...meta,maskData:{...meta.mask,imageData:new Uint8Array(bytes)}};}
 async function generate(){voice.cancel();
@@ -277,7 +301,7 @@ async function generate(){voice.cancel();
  await queue.submit(record,[sourceImage,...references.map(r=>r.data)],params);
  selectedJobId=id;syncInputs();show('selection-gate',false);navigatePage('edit');status('已提交。下方显示生成状态；点击新建改图可以继续修改其他区域。');queue.tick();
 }
- async function openHistory(id){voice.cancel();if(selectedJobId!==id)await saveCurrent();const record=queue.jobs.find(j=>j.id===id);if(!record)return;record.closed=false;historyOpen=false;clearHistoryArmed=false;selectedJobId=id;tasksUI();try{capture=await restoreCapture(record.captureRef);}catch(_){capture=null;}sourceImage=capture?.sourceImage||null;references=capture?.references||[];if(!sourceImage && capture){try{const folder=await fs.getDataFolder(),meta=JSON.parse(await(await folder.getEntry('selection.json')).read());if(meta.context.documentId===capture.context.documentId && JSON.stringify(meta.bounds)===JSON.stringify(capture.bounds))sourceImage=meta.sourceImage;}catch(_){}}$('prompt').value=record.prompt;promptEditor?.resize();$('model').value=record.model;$('quality').value=record.quality||'auto';$('output-size').value=record.ratio||'original';$('count').value=String(record.count||1);show('selection-gate',false);navigatePage('edit');syncInputs();status(sourceImage?'已恢复当时的输入。结果完成后点击图片添加图层。':'旧记录未保存输入缩略图；提示词和结果已恢复。');}
+async function openHistory(id){voice.cancel();if(selectedJobId!==id){cancelOptimization();clearOptimizeUndo();await saveCurrent();}const record=queue.jobs.find(j=>j.id===id);if(!record)return;record.closed=false;historyOpen=false;clearHistoryArmed=false;selectedJobId=id;tasksUI();try{capture=await restoreCapture(record.captureRef);}catch(_){capture=null;}sourceImage=capture?.sourceImage||null;references=capture?.references||[];if(!sourceImage && capture){try{const folder=await fs.getDataFolder(),meta=JSON.parse(await(await folder.getEntry('selection.json')).read());if(meta.context.documentId===capture.context.documentId && JSON.stringify(meta.bounds)===JSON.stringify(capture.bounds))sourceImage=meta.sourceImage;}catch(_){}}$('prompt').value=record.prompt;promptEditor?.resize();$('model').value=record.model;$('quality').value=record.quality||'auto';$('output-size').value=record.ratio||'original';$('count').value=String(record.count||1);show('selection-gate',false);navigatePage('edit');syncInputs();status(sourceImage?'已恢复当时的输入。结果完成后点击图片添加图层。':'旧记录未保存输入缩略图；提示词和结果已恢复。');}
 async function candidateAction(data){const record=queue.jobs.find(j=>j.id===data.jobId),task=record?.tasks.find(t=>t.id===data.taskId),result=task?.results[data.index];if(!result)throw new Error('结果不存在。');
  const {buffer,ext}=await download(result.source);
  if(data.type==='preview'){const folder=await fs.getTemporaryFolder(),file=await folder.createFile('preview-'+task.id+'-'+data.index+'.'+ext,{overwrite:true});await file.write(buffer,{format:storage.formats.binary});const error=await shell.openPath(file.nativePath);if(error)throw new Error(error);status('已在系统图片查看器打开原尺寸结果。');return;}
@@ -436,7 +460,8 @@ async function init() {
   queue.jobs.forEach((j,i)=>{j.number ||= queue.jobs.length-i;j.title ||= '局部改图 '+j.number;});
   queue.tick();settingsPage(false);const reloadJobId=localStorage.getItem('lk888-reload-job-id');localStorage.removeItem('lk888-reload-job-id');if(queue.jobs.length)await openHistory(queue.jobs.find(j=>j.id===reloadJobId)?.id||queue.jobs[0].id);
   $('settings-toggle').addEventListener('click', () => settingsPage(!settingsOpen));
-  promptEditor=new PromptEditor({node:$('prompt'),voiceButton:$('voice-prompt'),expandButton:$('expand-prompt'),container:$('prompt').parentElement,clipboard:typeof navigator!=='undefined'?navigator.clipboard:null,context:()=>selectedJobId,onChange:value=>localStorage.setItem('lk888-prompt',value),onNotice:(message,error)=>{const note=$('input-notice');note.textContent=message;note.className=error?'error':'';},onVoice:kind=>{if(kind==='stop')voice.stop();else voice.start();},readImageClipboard:()=>voice.request('/clipboard'),onImage:async data=>{if(references.length>=5)throw new Error('最多添加5张参考图。');const match=typeof data==='string'&&data.match(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i);if(!match||data.length>14*1024*1024)throw new Error('截图格式或大小无效。');references.push({name:'截图.'+(match[1].toLowerCase()==='jpeg'?'jpg':match[1].toLowerCase()),data});syncInputs();}});
+  promptEditor=new PromptEditor({node:$('prompt'),voiceButton:$('voice-prompt'),expandButton:$('expand-prompt'),container:$('prompt').parentElement,clipboard:typeof navigator!=='undefined'?navigator.clipboard:null,context:()=>selectedJobId,onChange:value=>{localStorage.setItem('lk888-prompt',value);if(!applyingOptimizedPrompt)clearOptimizeUndo();},onNotice:(message,error)=>{const note=$('input-notice');note.textContent=message;note.className=error?'error':'';},onVoice:kind=>{if(kind==='stop')voice.stop();else voice.start();},readImageClipboard:()=>voice.request('/clipboard'),onImage:async data=>{if(references.length>=5)throw new Error('最多添加5张参考图。');const match=typeof data==='string'&&data.match(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i);if(!match||data.length>14*1024*1024)throw new Error('截图格式或大小无效。');references.push({name:'截图.'+(match[1].toLowerCase()==='jpeg'?'jpg':match[1].toLowerCase()),data});syncInputs();}});
+  $('prompt').addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&String(event.key).toLowerCase()==='z'&&lastPromptBeforeOptimize?.context===selectedJobId){event.preventDefault();undoOptimization().catch(error=>status(error.message||'撤销失败。',true));}});
   promptEditor.resize();
   console.log('Native prompt editor ready; clipboard access: '+(typeof navigator!=='undefined' && !!navigator.clipboard));
   $('restore-result').addEventListener('click',()=>{if(job && !job.imported && !job.source){status('先处理当前任务。',true);return;}const saved=localStorage.getItem('lk888-last-result');if(!saved){status('暂无上次结果。');return;}job=JSON.parse(saved);capture=null;sourceImage=null;saveJob();refresh();status('已恢复上次结果，可点击保存结果。');});
@@ -449,6 +474,8 @@ async function init() {
   }));
   $('test-key').addEventListener('click', () => withBusy(async () => { await (await client()).balance(); status('接口鉴权成功。尚未提交生图任务。'); }));
   $('custom-model').addEventListener('change', () => localStorage.setItem('lk888-custom-model', $('custom-model').value.trim()));
+  $('optimize-prompt').addEventListener('click',optimizePrompt);
+  $('undo-optimize').addEventListener('click',()=>undoOptimization().catch(error=>status(error.message||'撤销失败。',true)));
   $('generate').addEventListener('click', () => withBusy(generate));
   $('resume').addEventListener('click', () => withBusy(async () => { if (job.source) { if (capture && !job.imported) await importImage(); else status('结果已保留。点击保存结果下载图片。'); return; } await queue.tick(); }));
   $('import-result').addEventListener('click', () => withBusy(importImage));
