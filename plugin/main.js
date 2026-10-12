@@ -28,7 +28,8 @@ async function optimizePrompt(){
   const result=await optimizer.optimize({text,images,target});
   if(epoch!==optimizeEpoch||context!==selectedJobId)return;
   lastPromptBeforeOptimize={context,text:original};applyingOptimizedPrompt=true;$('prompt').value=result.prompt||'';promptEditor.changed();applyingOptimizedPrompt=false;
-  await saveCurrent();show('undo-optimize',true,'inline-block');undoOptimizeTimer=setTimeout(clearOptimizeUndo,10000);status('已优化，可按 Ctrl+Z 或点「撤销优化」恢复原文。');
+  let added=0;for(const image of (Array.isArray(result.images)?result.images:[])){if(references.length>=5)break;const data=typeof image?.data==='string'?image.data:'';if(!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(data)||data.length>14*1024*1024)continue;references.push({name:String(image.name||`影词魔方图片${references.length+1}.png`).slice(0,150),data});added++;}
+  syncInputs();await saveCurrent();show('undo-optimize',true,'inline-block');undoOptimizeTimer=setTimeout(clearOptimizeUndo,10000);status(added?`已优化并回传，新增 ${added} 张参考图。现在可点击生成。`:'已优化并回传。现在可点击生成；可按 Ctrl+Z 撤销提示词。');
  }catch(error){if(epoch===optimizeEpoch&&!/已取消优化/.test(error.message||''))status(error.message||'优化失败。',true);}
  finally{if(epoch===optimizeEpoch){optimizing=false;refresh();}}
 }

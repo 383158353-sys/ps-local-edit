@@ -1,7 +1,7 @@
 const BASE_URL='http://127.0.0.1:5173/api/bridge';
 
 class OptimizerClient {
-  constructor({fetchImpl=fetch,timeoutMs=90000}={}){this.fetch=fetchImpl;this.timeoutMs=timeoutMs;this.controller=null;this.cancelled=false;}
+  constructor({fetchImpl=fetch,timeoutMs=15*60*1000}={}){this.fetch=fetchImpl;this.timeoutMs=timeoutMs;this.controller=null;this.cancelled=false;}
   cancel(){this.cancelled=true;this.controller?.abort();this.controller=null;}
   async request(path,{method='GET',body,timeoutMs=this.timeoutMs}={}){
     this.cancel();this.cancelled=false;
