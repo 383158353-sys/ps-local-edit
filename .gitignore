@@ -8,3 +8,9 @@ node_modules/
 *.tmp
 .DS_Store
 Thumbs.db
+
+# Local installation backups and machine diagnostics
+.uninstalled-plugins/
+diagnostics/
+# Generated previews, checksums and installers belong in Releases, not source
+dist/

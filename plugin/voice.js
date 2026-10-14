@@ -11,7 +11,7 @@ class VoiceController {
       const response=await this.fetch('http://127.0.0.1:17402'+path,{method,signal:controller.signal,credentials:'omit',headers:{'X-PS-Local-Voice':'1',...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});
       const data=await response.json();if(!response.ok)throw new Error(data.message||'本机语音服务异常。');return data;
     } catch(error) {
-      if(error.name==='AbortError'||/fetch|network|connect/i.test(error.message||''))throw new Error((path.startsWith('/clipboard')?'本机截图粘贴服务':path.startsWith('/drop')?'本机图片拖入服务':path.startsWith('/annotate')?'本机图片标注服务':'本机语音服务')+'未连接。请双击“打开局部改图插件.cmd”后重试。');
+      if(error.name==='AbortError'||/fetch|network|connect/i.test(error.message||''))throw new Error((path.startsWith('/clipboard')?'本机截图粘贴服务':path.startsWith('/drop')?'本机图片拖入服务':path.startsWith('/annotate')?'本机图片标注服务':'本机语音服务')+'未连接。Windows 请在源码目录运行 node scripts/voice-server.cjs 后重试；macOS 请使用系统听写。');
       throw error;
     } finally {clearTimeout(timer);}
   }

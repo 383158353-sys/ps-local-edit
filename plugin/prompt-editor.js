@@ -1,7 +1,8 @@
+const {setButtonDisabled}=require('./ui-controls');
 // Native UXP textarea keeps Photoshop keyboard focus out of embedded WebViews.
 class PromptEditor {
-  constructor({node,voiceButton,expandButton,container,clipboard,onChange,onImage,onNotice,onVoice,context=()=>null,readImageClipboard}) {
-    Object.assign(this,{node,voiceButton,expandButton,container,clipboard,onChange,onImage,onNotice,onVoice,context,readImageClipboard});
+  constructor({node,voiceButton,expandButton,container,clipboard,onChange,onImage,onNotice,onVoice,context=()=>null,readImageClipboard,platform=''}) {
+    Object.assign(this,{node,voiceButton,expandButton,container,clipboard,onChange,onImage,onNotice,onVoice,context,readImageClipboard,platform});
     this.busy=false;this.pasting=false;this.voiceState='idle';this.pendingPaste=null;this.pasteFallbackTimer=null;
     node.addEventListener('input',()=>this.changed());
     node.addEventListener('keydown',event=>{
@@ -24,7 +25,9 @@ class PromptEditor {
     node.addEventListener('keyup',event=>event.stopPropagation());
     node.addEventListener('paste',event=>this.handlePaste(event));
     voiceButton.addEventListener('mousedown',event=>event.preventDefault());
-    voiceButton.addEventListener('click',()=>{if(!this.busy)this.onVoice(['starting','listening','stopping'].includes(this.voiceState)?'stop':'start');});
+    voiceButton.title=platform==='darwin'?'macOS 系统听写设置与使用方法':'先启动 Windows 本机语音助手，再点击开始听写';
+    voiceButton.textContent=platform==='darwin'?'听写帮助':'语音';
+    voiceButton.addEventListener('click',()=>{if(this.busy)return;if(this.platform==='darwin'){this.node.focus();this.onNotice('Mac：在系统设置 → 键盘 → 听写中开启中文听写；点击文字区后使用该处设置的听写快捷键。插件的本机语音助手目前仅支持 Windows。');return;}this.onVoice(['starting','listening','stopping'].includes(this.voiceState)?'stop':'start');});
     if(expandButton){
       expandButton.addEventListener('mousedown',event=>event.preventDefault());
       expandButton.addEventListener('click',()=>this.setExpanded(!this.container?.classList?.contains('expanded')));
@@ -43,10 +46,7 @@ class PromptEditor {
   changed(){this.resize();this.onChange(this.node.value);}
   resize(){
     if(!this.node.style)return;
-    this.node.style.height='56px';
-    const estimatedLines=String(this.node.value||'').split('\n').reduce((count,line)=>count+Math.max(1,Math.ceil(line.length/32)),0);
-    const measured=Number(this.node.scrollHeight)||estimatedLines*18+42;
-    this.node.style.height=Math.min(320,Math.max(56,measured))+'px';
+    this.node.style.width='100%';this.node.style.margin='0';
   }
   clipboardImage(event){
     const clipboard=event?.clipboardData;if(!clipboard)return null;
@@ -77,7 +77,7 @@ class PromptEditor {
   }
   setBusy(busy){
     if(this.busy===busy)return;this.busy=busy;
-    this.node.disabled=busy;this.voiceButton.disabled=busy;if(this.expandButton)this.expandButton.disabled=busy;
+    this.node.disabled=busy;setButtonDisabled(this.voiceButton,busy);if(this.expandButton)setButtonDisabled(this.expandButton,busy);
   }
   insert(value){
     if(this.busy||typeof value!=='string')return;
@@ -138,7 +138,7 @@ class PromptEditor {
     finally{this.pasting=false;}
   }
   voice(data){
-    this.voiceState=data.state;this.voiceButton.textContent=['starting','listening','stopping'].includes(data.state)?'⏹ 停止':'🎙 语音';
+    this.voiceState=data.state;this.voiceButton.textContent=['starting','listening','stopping'].includes(data.state)?'停止':this.platform==='darwin'?'听写帮助':'语音';
     this.onNotice(data.message||'',data.state==='error');
   }
 }
