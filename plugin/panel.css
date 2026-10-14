@@ -163,3 +163,32 @@ input::placeholder,textarea::placeholder { color:#828c9a; }
 @media (min-width:520px) { .options { flex-wrap:nowrap; } .options .model-option { flex:1.8 1 0; margin-right:8px; } }
 @media (max-width:320px) { main { padding:10px; } h1 { font-size:14px; } .header-actions .ui-button { padding:0 5px; margin-left:2px; } .task-result { width:100%; margin-right:0; } #selection-size { display:none; } }
 @media (max-height:700px) { :root { --tile:80px; } main { padding-top:8px; } .app-header { padding-bottom:6px; } .document-tabs .tab-button { height:44px; } .reference-thumb img { height:56px; } .dropzone .ui-button { height:19px; } .prompt-editor textarea { height:70px !important; min-height:70px; max-height:70px; } .task-result img { height:80px; } .prompt-editor.expanded textarea { height:100% !important; max-height:100%; } }
+
+/* Keep native textarea chrome out of the shared editor surface. */
+html { height:100%; overflow-y:hidden; }
+body { height:100%; overflow-y:auto; }
+main { min-width:0; padding:10px 12px; }
+.app-header { padding-bottom:6px; }
+.regions-section { padding-bottom:6px; margin-bottom:6px; }
+.section-heading { min-height:26px; margin-bottom:4px; }
+:root { --tile:80px; }
+.reference-thumb img { height:56px; }
+.dropzone .ui-button { height:19px; }
+.prompt-editor { border:1px solid var(--line); border-radius:var(--radius); background:var(--surface); overflow:hidden; }
+.prompt-editor textarea { appearance:none; -webkit-appearance:none; box-shadow:none; outline:none; border:0; border-radius:0; background:transparent; height:64px !important; min-height:64px; max-height:64px; padding:8px 9px 30px; line-height:17px; }
+.prompt-editor textarea:focus { outline:none; border:0; box-shadow:none; }
+.prompt-actions { right:5px; bottom:5px; }
+.options { flex-wrap:nowrap; margin-top:2px; }
+.options .model-option { flex:1.8 1 0; margin-right:8px; }
+.option label { height:18px; margin-top:4px; }
+.section-label { margin-top:7px; }
+.model-library-link { margin-top:3px; }
+#generate { margin-top:6px; height:32px; }
+#task-page { margin-top:10px; padding-top:6px; }
+.task-result img { height:76px; }
+.task-message { margin:2px 0 5px; }
+#status { max-height:32px; margin-top:6px; }
+.prompt-editor.expanded { overflow:visible; }
+.prompt-editor.expanded textarea { height:100% !important; min-height:0; max-height:100%; }
+@media (max-width:320px) { .options { flex-wrap:wrap; } .options .model-option { flex:0 0 100%; margin-right:0; } }
+@media (max-height:700px) { .task-result img { height:60px; } .result-footnote { display:none; } }
