@@ -30,7 +30,7 @@ test('switching editor stops microphone and does not insert late dictation',asyn
 });
 test('unavailable helper shows actionable error and does not submit audio',async()=>{
   const states=[];const controller=new VoiceController({onState:s=>states.push(s),fetchImpl:async()=>{throw new Error('fetch failed');}});
-  await controller.start();assert.equal(states.at(-1).state,'error');assert.match(states.at(-1).message,/打开局部改图插件/);assert.equal(controller.session,null);
+  await controller.start();assert.equal(states.at(-1).state,'error');assert.match(states.at(-1).message,/node scripts\/voice-server\.cjs/);assert.equal(controller.session,null);
 });
 test('stop retains final recognized phrase before completion',async()=>{
   const texts=[];let stopped=false;
