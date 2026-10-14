@@ -1,3 +1,4 @@
+const {setButtonDisabled}=require('./ui-controls');
 // Native UXP textarea keeps Photoshop keyboard focus out of embedded WebViews.
 class PromptEditor {
   constructor({node,voiceButton,expandButton,container,clipboard,onChange,onImage,onNotice,onVoice,context=()=>null,readImageClipboard}) {
@@ -77,7 +78,7 @@ class PromptEditor {
   }
   setBusy(busy){
     if(this.busy===busy)return;this.busy=busy;
-    this.node.disabled=busy;this.voiceButton.disabled=busy;if(this.expandButton)this.expandButton.disabled=busy;
+    this.node.disabled=busy;setButtonDisabled(this.voiceButton,busy);if(this.expandButton)setButtonDisabled(this.expandButton,busy);
   }
   insert(value){
     if(this.busy||typeof value!=='string')return;

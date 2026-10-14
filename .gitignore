@@ -15,4 +15,4 @@ diagnostics/
 # Historical local packages and UI snapshots; keep the current delivery
 dist/*preview-*.png
 dist/局部改图-LK888-*.ccx
-!dist/局部改图-LK888-0.3.11.ccx
+!dist/局部改图-LK888-0.4.0.ccx

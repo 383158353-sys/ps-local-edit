@@ -7,7 +7,7 @@ html=html.replace('href="panel.css"','href="../plugin/panel.css"');
 html=html.replace(/<sp-dropdown id="([^"]+)"[^>]*><sp-menu[^>]*>/g,'<select id="$1">').replace(/<\/sp-menu><\/sp-dropdown>/g,'</select>');
 html=html.replace(/<sp-menu-item value="([^"]+)"( selected)?>([^<]+)<\/sp-menu-item>/g,'<option value="$1"$2>$3</option>');
 html=html.replace(/<sp-checkbox([^>]*)>([^<]+)<\/sp-checkbox>/g,'<label><input type="checkbox"$1>$2</label>');
-const modules=['api','model-policy','dropdown','platform-models','platform-schema','platform-profiles','model-catalog','task-queue','png','lib/fflate','modules/geometry','prompt-editor'];
+const modules=['ui-controls','api','model-policy','dropdown','platform-models','platform-schema','platform-profiles','model-catalog','task-queue','png','lib/fflate','modules/geometry','prompt-editor'];
 const bundle=modules.map(id=>`factories[${JSON.stringify('./'+id)}]=function(module,exports,require){\n${fs.readFileSync(path.join(root,'plugin',id+'.js'),'utf8')}\n};`).join('\n');
 
 const runtime=fs.readFileSync(path.join(root,'scripts/preview-runtime.js'),'utf8');
@@ -16,7 +16,7 @@ let main=fs.readFileSync(path.join(root,'plugin/main.js'),'utf8');
 const script=`(function(){const factories={},cache={};${bundle}\n${runtime}\n${main}\n})();`;
 html=html.replace('<script src="main.js"></script>',()=>`<script>${script.replace(/<\/script/gi,'<\\/script')}</script>`);
 html=html.replace('</head>',`<style>
-body{width:100%;max-width:440px;margin:0 auto}sp-action-button,sp-button{display:inline-flex;align-items:center;justify-content:center;padding:5px 9px;border:1px solid #43464b;border-radius:5px;font:inherit;color:#eee;background:#303338;min-height:27px}sp-action-button[quiet]{background:transparent;border-color:transparent}#generate,#capture-selection{background:#408cff;color:white;border:0;font-weight:600;border-radius:6px}#generate{display:flex}select{width:100%;height:32px;min-width:0;border:1px solid #43464b;border-radius:5px;background:#2d2f32;color:#eee;padding:0 5px;font:11px inherit}sp-action-button:hover{background:#3b4048}input[type=checkbox]{width:auto}.preview-banner{padding:6px 16px;color:#9ea8b8;font-size:10px;background:#1c1e21}.preview-banner a{color:#a8c9f7}
+body{width:100%;margin:0 auto}input[type=checkbox]{width:auto}.preview-banner{padding:6px 16px;color:#9ea8b8;font-size:10px;background:#1c1e21}.preview-banner a{color:#a8c9f7}
 </style></head>`);
 html=html.replace('<body><main>','<body><div class="preview-banner">界面预览 · 使用模拟数据 · 不连接 Photoshop 或生图接口　<a href="?empty">空状态</a> / <a href="?demo">任务状态</a></div><main>');
 fs.mkdirSync(path.join(root,'dist'),{recursive:true});fs.writeFileSync(path.join(root,'dist/panel-preview.html'),html);

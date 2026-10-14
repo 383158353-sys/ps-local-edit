@@ -39,7 +39,7 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
     if (name === 'photoshop') return { app, action, imaging: { encodeImageData: async () => 'YWJj' }, constants: { DocumentMode: { RGB: 'RGB' } } };
     if (name === 'uxp') return { storage };
     if (name === './modules/ps') return ps;if(name==='./modules/geometry')return require('../plugin/modules/geometry');
-    if(name==='./model-policy')return require('../plugin/model-policy');if(name==='./prompt-editor')return require('../plugin/prompt-editor');if(name==='./voice'){const Base=require('../plugin/voice').VoiceController;return {VoiceController:class extends Base{constructor(options){super({...options,fetchImpl:fetch});}}};}if(name==='./platform-profiles')return require('../plugin/platform-profiles');if(name==='./dropdown')return require('../plugin/dropdown');if(name==='./model-catalog')return require('../plugin/model-catalog');if(name==='./task-queue')return {TaskQueue};if(name==='./png'){const png=require('../plugin/png');return shrinkUpload?{...png,uploadPNG:async()=>({encoded:png.pngRGBA(150,100,new Uint8Array(150*100*4)),width:150,height:100,originalWidth:300,originalHeight:200,resized:true})}:png;}
+    if(name==='./ui-controls')return require('../plugin/ui-controls');if(name==='./model-policy')return require('../plugin/model-policy');if(name==='./prompt-editor')return require('../plugin/prompt-editor');if(name==='./voice'){const Base=require('../plugin/voice').VoiceController;return {VoiceController:class extends Base{constructor(options){super({...options,fetchImpl:fetch});}}};}if(name==='./platform-profiles')return require('../plugin/platform-profiles');if(name==='./dropdown')return require('../plugin/dropdown');if(name==='./model-catalog')return require('../plugin/model-catalog');if(name==='./task-queue')return {TaskQueue};if(name==='./png'){const png=require('../plugin/png');return shrinkUpload?{...png,uploadPNG:async()=>({encoded:png.pngRGBA(150,100,new Uint8Array(150*100*4)),width:150,height:100,originalWidth:300,originalHeight:200,resized:true})}:png;}
     if (name === './modules/fs') return { arrayBufferToBase64:v=>Buffer.from(v).toString('base64'), base64ToArrayBuffer: v => {imageDecodes++;return Uint8Array.from(Buffer.from(v, 'base64')).buffer;} };
     if (name === './api') return { ...api, MediaClient: Client };
     throw new Error(name);
@@ -264,7 +264,7 @@ test('large model catalogs have bounded controls and search can select a late en
  assert.equal(h.nodes['model-list'].children.filter(n=>n.className==='model-entry').length,20);
  const menu=h.nodes.model.children[0];h.nodes['model-search'].value='studio-1999';h.nodes['model-search'].input();
  assert.equal(h.nodes.model.children[0],menu,'search does not recreate choice captions');
- const row=h.nodes['model-list'].children.find(n=>n.className==='model-entry');assert.equal(row.children[0].id,'button');
+ const row=h.nodes['model-list'].children.find(n=>n.className==='model-entry');assert.equal(row.children[0].attributes.role,'button');
  row.children[0].click();assert.equal(h.selected('model'),'studio-1999');assert.ok(h.choices('model').length<=42);
 });
 

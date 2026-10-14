@@ -1,3 +1,4 @@
+const {setButtonDisabled,createUiButton,initButtons}=require('./ui-controls');
 const { app, imaging, constants, action } = require('photoshop');
 const { storage, shell } = require('uxp');
 const ps = require('./modules/ps');
@@ -72,7 +73,7 @@ function updateModelInputs(){
  fillChoices('quality',[{value:'auto',label:choices.qualities.length?'自动':profile?.hasSchema?'平台未提供':'平台默认'},...choices.qualities.map(value=>({value,label:value+(profile&&!profile.hasSchema&&profile.evidence!=='preset'&&!platformProfile(profile)?' · 通用':'')}))],'auto');
  fillChoices('output-size',[{value:'original',label:choices.ratios.length?'原图':'原选区'},...choices.ratios.map(value=>({value,label:value}))],'original');
  setChoiceDisabled($('quality'),busy||!choices.qualities.length);setChoiceDisabled($('output-size'),busy||!choices.ratios.length);
- const favorite=$('favorite-model'),saved=!!profile&&favoriteModels.includes(profile.id);favorite.textContent=saved?'★':'☆';favorite.title=saved?'取消收藏当前模型':'收藏当前模型';favorite.setAttribute('aria-label',favorite.title);favorite.setAttribute('aria-pressed',String(saved));favorite.disabled=busy||!profile||readChoice($('model'))==='custom';
+ const favorite=$('favorite-model'),saved=!!profile&&favoriteModels.includes(profile.id);favorite.textContent=saved?'★':'☆';favorite.title=saved?'取消收藏当前模型':'收藏当前模型';favorite.setAttribute('aria-label',favorite.title);favorite.setAttribute('aria-pressed',String(saved));setButtonDisabled(favorite,busy||!profile||readChoice($('model'))==='custom');
  $('model-hint').textContent=(profile?profile.id+' · ':'')+modelHint(profile);$('model-hint').title=$('model-hint').textContent;renderExtraInputs(profile);
 }
 function renderModels(preferred=readChoice($('model'))){
@@ -85,9 +86,9 @@ function renderModels(preferred=readChoice($('model'))){
 }
 function renderModelManager(){
  const root=$('model-list');root.innerHTML='';const matches=orderModels(modelList,favoriteModels,modelFilter,modelSearch),pages=Math.max(1,Math.ceil(matches.length/20));modelPage=Math.max(0,Math.min(modelPage,pages-1));
- $('model-page-info').textContent='共 '+modelList.length+' 个 · 匹配 '+matches.length+' 个 · 第 '+(modelPage+1)+' / '+pages+' 页';$('model-prev').disabled=modelPage===0;$('model-next').disabled=modelPage>=pages-1;
+ $('model-page-info').textContent='共 '+modelList.length+' 个 · 匹配 '+matches.length+' 个 · 第 '+(modelPage+1)+' / '+pages+' 页';setButtonDisabled($('model-prev'),modelPage===0);setButtonDisabled($('model-next'),modelPage>=pages-1);
  if(!matches.length){const empty=document.createElement('p');empty.className='hint';empty.textContent=modelFilter==='favorites'?'还没有收藏模型，点击模型旁的 ☆ 添加。':'没有匹配的模型。';root.appendChild(empty);}
- matches.slice(modelPage*20,(modelPage+1)*20).forEach(model=>{const row=document.createElement('div');row.className='model-entry';const choose=document.createElement('button');choose.setAttribute('quiet','');choose.className='model-choose';choose.textContent=(model.kind==='other'?'非图像 · ':['candidate','unknown'].includes(model.kind)?'待确认 · ':model.kind==='edit'&&model.evidence==='api'?'图像编辑 · ':model.evidence==='preset'?'预设 · ':'图像 · ')+model.label;choose.title=model.id+' · '+modelHint(model);choose.addEventListener('click',()=>{if(busy)return;renderModels(model.id);settingsPage(false);});const star=document.createElement('button');star.setAttribute('quiet','');star.textContent=favoriteModels.includes(model.id)?'★':'☆';star.title=(favoriteModels.includes(model.id)?'取消收藏 ':'收藏 ')+model.label;star.setAttribute('aria-label',star.title);star.addEventListener('click',()=>{if(!busy)toggleFavorite(model.id);});row.appendChild(choose);row.appendChild(star);root.appendChild(row);});
+ matches.slice(modelPage*20,(modelPage+1)*20).forEach(model=>{const row=document.createElement('div');row.className='model-entry';const choose=createUiButton(document);choose.setAttribute('quiet','');choose.className='ui-button model-choose';choose.textContent=(model.kind==='other'?'非图像 · ':['candidate','unknown'].includes(model.kind)?'待确认 · ':model.kind==='edit'&&model.evidence==='api'?'图像编辑 · ':model.evidence==='preset'?'预设 · ':'图像 · ')+model.label;choose.title=model.id+' · '+modelHint(model);choose.addEventListener('click',()=>{if(busy)return;renderModels(model.id);settingsPage(false);});const star=createUiButton(document);star.setAttribute('quiet','');star.textContent=favoriteModels.includes(model.id)?'★':'☆';star.title=(favoriteModels.includes(model.id)?'取消收藏 ':'收藏 ')+model.label;star.setAttribute('aria-label',star.title);star.addEventListener('click',()=>{if(!busy)toggleFavorite(model.id);});row.appendChild(choose);row.appendChild(star);root.appendChild(row);});
  $('browse-models').textContent='全部模型（'+modelList.length+'）';
 }
 function connectionStatus(state,{save=true,checkedAt=Date.now()}={}){
@@ -150,7 +151,7 @@ function syncInputs(){
   const badge=document.createElement('span');badge.className='badge';badge.textContent=String(index+2);tile.appendChild(badge);
   const img=document.createElement('img');img.src=ref.data;img.alt=ref.name||'参考图';img.draggable=false;img.title='点击标注参考图';img.onclick=()=>openAnnotation(index);tile.appendChild(img);
   const name=document.createElement('span');name.className='hint';name.textContent=ref.name||'参考图';tile.appendChild(name);
-  const remove=document.createElement('button');remove.className='remove-reference';remove.textContent='×';remove.title='移除参考图';remove.disabled=busy;remove.onclick=()=>{references.splice(index,1);syncInputs();};tile.appendChild(remove);
+  const remove=createUiButton(document);remove.className='ui-button remove-reference';remove.textContent='×';remove.title='移除参考图';setButtonDisabled(remove,busy);remove.onclick=()=>{references.splice(index,1);syncInputs();};tile.appendChild(remove);
   const annotate=document.createElement('span');annotate.className='annotate-reference';annotate.textContent='✎';annotate.title='标注参考图';annotate.setAttribute('role','button');annotate.setAttribute('tabindex','0');annotate.setAttribute('aria-label','标注参考图');annotate.onclick=()=>openAnnotation(index);annotate.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openAnnotation(index);}};tile.appendChild(annotate);
   tile.addEventListener('mousedown',event=>{if(busy||event.button!==0||event.target===remove||event.target===annotate)return;referenceDrag={index,jobId:selectedJobId,x:event.clientX,y:event.clientY,moved:false};event.preventDefault();});
   container.appendChild(tile);
@@ -222,20 +223,20 @@ function matchesTaskDocument(doc, region){
 function saveJob() { if (job) localStorage.setItem('lk888-job', JSON.stringify(job)); else localStorage.removeItem('lk888-job'); }
 function refresh() {
   const pendingConfirmation=queue?.jobs.find(j=>j.id===selectedJobId)?.state==='uncertain';
-  $('generate').disabled=busy||apiBusy||pendingConfirmation;
+  setButtonDisabled($('generate'),busy||apiBusy||pendingConfirmation);
   $('generate').textContent=pendingConfirmation?'请先核对提交结果':busy ? '正在处理…' : queue?.jobs.find(j=>j.id===selectedJobId)?.tasks.length?'按当前输入再次生成':'生成当前选区';
-  $('refresh-selection').disabled=busy;$('tab-edit').disabled=busy;
+  setButtonDisabled($('refresh-selection'),busy);setButtonDisabled($('tab-edit'),busy);
   setChoiceDisabled($('count'),busy);updateModelInputs();
   show('pause-wait',false);
   setChoiceDisabled($('model'),busy); if(promptEditor)promptEditor.setBusy(busy);else $('prompt').disabled=busy;
-  $('add-reference').disabled = busy; $('clear-reference').disabled = busy;
+  ['add-reference','paste-reference','open-drop-window','clear-reference','settings-toggle','reload-panel'].forEach(id=>setButtonDisabled($(id),busy));
   show('recovery',false);
-  $('resume').disabled = busy || !job || !job.taskId;
+  setButtonDisabled($('resume'),busy || !job || !job.taskId);
   show('resume', !!(job && job.taskId));
   show('import-result', !!(job && job.source && capture && !job.imported));
   show('save-result', !!(job && job.source));
-  $('import-result').disabled = busy; $('save-result').disabled = busy;
-  $('reset-job').disabled = busy;
+  setButtonDisabled($('import-result'),busy); setButtonDisabled($('save-result'),busy);
+  setButtonDisabled($('reset-job'),busy);
   syncInputs();
 }
 async function key() {
@@ -251,11 +252,11 @@ async function withBusy(fn) {
 // Settings requests must not refresh Photoshop's native menus or image views.
 async function withApiBusy(fn,failurePrefix='',connectionCheck=false){
  if(apiBusy||busy)return;
- apiBusy=true;$('generate').disabled=true;
+ apiBusy=true;setButtonDisabled($('generate'),true);
  const buttons=['test-key','refresh-models','save-key'];
- buttons.forEach(id=>$(id).disabled=true);
+ buttons.forEach(id=>setButtonDisabled($(id),true));
  try{await fn();}catch(error){const message=failurePrefix+(error.message||'接口检查失败，请稍后重试。');if(connectionCheck)connectionStatus('error');else $('models-status').textContent=message;status(message,true);}
- finally{apiBusy=false;$('generate').disabled=busy||queue?.jobs.find(j=>j.id===selectedJobId)?.state==='uncertain';buttons.forEach(id=>$(id).disabled=false);}
+ finally{apiBusy=false;setButtonDisabled($('generate'),busy||queue?.jobs.find(j=>j.id===selectedJobId)?.state==='uncertain');buttons.forEach(id=>setButtonDisabled($(id),false));}
 }
 async function downloadUncached(source) {
   if (source.startsWith('data:image/')) return { buffer: fileUtils.base64ToArrayBuffer(source.split(',')[1]), ext: source.includes('image/jpeg') ? 'jpg' : source.includes('image/webp') ? 'webp' : 'png' };
@@ -294,7 +295,7 @@ async function importImage() {
   job.imported = true; if(job.tasks){const task=job.tasks.find(t=>t.id===job.taskId);if(task)task.imported=true;} saveJob();
   status('已添加独立图层与原选区蒙版。Ctrl+Z 可撤销。');
   // Permit a new run after a successful import, keep the result available until then.
-  $('generate').disabled = false;
+  setButtonDisabled($('generate'),false);
 }
 function renderTasks(){
  const root=$('task-content');
@@ -303,8 +304,8 @@ function renderTasks(){
  if(signature===resultsSignature)return;resultsSignature=signature;root.innerHTML='';
  if(historyOpen){
   const list=document.createElement('div');list.className='task-history';
-  queue.jobs.forEach(record=>{const item=document.createElement('div');const open=document.createElement('button');open.textContent=record.title+' · '+stateLabel(record);open.onclick=()=>withBusy(()=>openHistory(record.id));const remove=document.createElement('button');remove.textContent='删除';remove.title='删除 '+record.title;remove.onclick=()=>withBusy(()=>deleteHistoryRecord(record.id));item.appendChild(open);item.appendChild(remove);list.appendChild(item);});
-  if(queue.jobs.length){const clear=document.createElement('button');clear.className='clear-history'+(clearHistoryArmed?' armed':'');clear.textContent=clearHistoryArmed?'确认清空全部记录':'清空历史记录';clear.onclick=onClearHistoryClick;list.appendChild(clear);}
+  queue.jobs.forEach(record=>{const item=document.createElement('div');const open=createUiButton(document);open.textContent=record.title+' · '+stateLabel(record);open.onclick=()=>withBusy(()=>openHistory(record.id));const remove=createUiButton(document);remove.textContent='删除';remove.title='删除 '+record.title;remove.onclick=()=>withBusy(()=>deleteHistoryRecord(record.id));item.appendChild(open);item.appendChild(remove);list.appendChild(item);});
+  if(queue.jobs.length){const clear=createUiButton(document);clear.className='ui-button clear-history'+(clearHistoryArmed?' armed':'');clear.textContent=clearHistoryArmed?'确认清空全部记录':'清空历史记录';clear.onclick=onClearHistoryClick;list.appendChild(clear);}
   if(!queue.jobs.length){const empty=document.createElement('p');empty.className='task-message';empty.textContent='暂无历史记录。';list.appendChild(empty);}
   root.appendChild(list);
  }
@@ -313,11 +314,11 @@ function renderTasks(){
  if(record.state==='submitting'||record.tasks?.some(t=>t.state==='running'))notice('当前选区生成中（'+record.tasks.filter(t=>t.state==='ready').length+' / '+record.count+' 张完成）。点 ＋ 新建其他选区；完成后点击对应标签查看。');
  if(record.state!=='draft'&&record.model)notice('本次提交模型：'+record.model);
  if(record.error)notice(record.error,true);
- let total=0;
+ let total=0;const resultCards=[];
  (record.tasks||[]).forEach(task=>{
   if(task.error)notice(task.error,true);
   (task.results||[]).forEach((result,index)=>{
-   total++;const card=document.createElement('div');card.className='task-result';root.appendChild(card);
+   total++;const card=document.createElement('div');card.className='task-result';root.appendChild(card);resultCards.push(card);
    const badge=document.createElement('span');badge.className='task-badge';badge.textContent=String(total);card.appendChild(badge);
    const img=document.createElement('img');img.src=result.source;img.alt='生成结果 '+total;
    const caption=document.createElement('span');caption.className='task-caption';caption.textContent=result.imported?'已添加图层，可再次添加':'点击图片添加图层';
@@ -334,14 +335,14 @@ function renderTasks(){
    img.onclick=()=>withBusy(()=>candidateAction({...action,type:'import'}));
    caption.onclick=img.onclick;
    const buttons=document.createElement('div');buttons.className='task-actions';
-   // Ordinary DOM controls avoid Photoshop's native button skin and minimum width.
-   const resultButton=(text,title,callback,primary=false)=>{const node=document.createElement('div');node.className='result-action'+(primary?' result-action-primary':'');node.textContent=text;node.title=title;node.setAttribute('role','button');node.setAttribute('tabindex','0');node.setAttribute('aria-label',title);node.onclick=callback;node.addEventListener('keydown',event=>{if(event.target===node&&event.key==='Enter'&&!event.repeat&&!event.altKey&&!event.ctrlKey&&!event.metaKey){event.preventDefault();event.stopPropagation();callback();}});return node;};
+   const resultButton=(text,title,callback,primary=false)=>{const node=createUiButton(document);node.className='ui-button result-action'+(primary?' result-action-primary':'');node.textContent=text;node.title=title;node.setAttribute('aria-label',title);node.onclick=callback;return node;};
    const add=resultButton(result.imported?'再次添加':'添加图层',result.imported?'再次添加图层':'添加图层',img.onclick,true);
    const zoom=resultButton('⤢','放大预览',()=>openTaskPreview(result,action));
    const save=resultButton('⇩','保存原图',()=>withBusy(()=>candidateAction({...action,type:'save'})));
    card.appendChild(img);card.appendChild(buttons);card.appendChild(caption);buttons.appendChild(add);buttons.appendChild(zoom);buttons.appendChild(save);
   });
  });
+ if(resultCards.length===1){resultCards[0].style.width='100%';resultCards[0].style.marginRight='0';}
  if(record.state==='draft')notice(sourceImage?'当前选区待生成，填写要求后点击“生成当前选区”。':'当前选区还未读取图片。');else if(record.state==='uncertain')notice('提交结果待确认，请先在平台核对任务，避免重复扣费。',true);else if(record.state==='failed')notice('当前选区生成失败，请查看上方错误。',true);
 }
 function renumberHistory(){queue.jobs.slice().reverse().forEach((record,index)=>{record.number=index+1;record.title='局部改图 '+(index+1);});}
@@ -558,7 +559,7 @@ async function openDropWindow(){
 }
 
 async function init() {
-  if (initialized) return; initialized = true;initChoices(document);
+  if (initialized) return; initialized = true;initChoices(document);initButtons(document);
   fillChoices('count',[1,2,3,4].map(n=>({value:String(n),label:n+'张'})),'1','1');
   fillChoices('model-filter',[{value:'all',label:'全部模型（图像优先）'},{value:'image',label:'仅图像候选'},{value:'favorites',label:'仅收藏'}],'all','all');
   if(typeof navigator!=='undefined')voice.request('/health').then(data=>console.log('Local voice helper: '+data.state+' '+(data.language||''))).catch(()=>console.log('Local voice helper unavailable; start with the local launcher.'));
