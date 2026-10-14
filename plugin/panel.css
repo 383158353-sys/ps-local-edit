@@ -1,7 +1,7 @@
 :root { --bg:#292929; --surface:#353535; --ink:#f2f2f2; --muted:#ccc; --line:#666; }
 html,body { max-width:100%; overflow-x:hidden; }
 * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font:13px "Segoe UI","Microsoft YaHei",sans-serif; } main { padding:14px; } header,.row { display:flex; align-items:center; justify-content:space-between; } header { margin-bottom:14px; } strong { font-size:15px; } label { display:block; margin:12px 0 6px; } label.inline { margin:0; } input,textarea { width:100%; padding:8px; color:var(--ink); background:var(--surface); border:1px solid var(--line); border-radius:4px; font:inherit; } textarea { height:110px; } input::placeholder,textarea::placeholder { color:var(--muted); } sp-dropdown { width:100%; } #generate { width:100%; margin-top:16px; } .row { margin:8px 0; flex-wrap:wrap; } .hint { font-size:11px; color:var(--muted); } .gate { padding:10px; background:#333; border:1px solid #555; border-radius:4px; } .gate p { margin:0 0 8px; } .images-row,.references { display:flex; flex-wrap:wrap; align-items:flex-start; } .thumb,.dropzone { position:relative; width:86px; height:96px; margin:6px 6px 0 0; border:1px solid #666; border-radius:4px; background:#353535; overflow:hidden; } .thumb img { width:84px; height:68px; object-fit:contain; } .thumb .hint { display:block; padding:3px; font-size:10px; } .badge { position:absolute; top:3px; left:3px; background:#222; color:white; padding:2px 5px; border-radius:3px; } .dropzone { border-style:dashed; display:flex; flex-direction:column; justify-content:center; align-items:center; width:104px; } .dropzone.dragging { border-color:#8ab4ff; } .options { display:flex; } .option { flex:1; min-width:0; } .option:first-child { margin-right:8px; flex:2; } #status { margin:12px 0 0; line-height:18px; } #status.error { color:#ffb6b6; } [hidden] { display:none; }
-.document-tabs { display:flex; flex-wrap:wrap; align-content:flex-start; align-items:center; min-width:0; max-height:58px; overflow-x:hidden; overflow-y:auto; } .document-tabs .tab-button { position:relative; display:inline-flex; flex:0 0 42px; align-items:center; justify-content:center; width:42px; height:28px; min-width:42px; padding:0; margin:2px; overflow:visible; font-size:12px; } .tab-button.active { background:#505050; } .tab-number { line-height:1; } .tab-close { display:none; position:absolute; top:1px; right:1px; z-index:2; align-items:center; justify-content:center; width:13px; height:13px; border-radius:50%; background:#222; color:#fff; font:12px/13px "Segoe UI",sans-serif; cursor:pointer; } .tab-button:hover .tab-close, .tab-button:focus .tab-close, .tab-close:focus { display:flex; }
+.document-tabs { display:flex; flex-wrap:wrap; align-content:flex-start; align-items:center; min-width:0; height:64px; max-height:64px; overflow-x:hidden; overflow-y:auto; } .document-tabs .tab-button { position:relative; display:inline-flex; flex:0 0 42px; align-items:center; justify-content:center; width:42px; height:28px; min-width:42px; padding:0; margin:2px; overflow:visible; font-size:12px; } .tab-button.active { background:#505050; } .tab-number { line-height:1; } .tab-close { display:none; position:absolute; top:1px; right:1px; z-index:2; align-items:center; justify-content:center; width:13px; height:13px; border-radius:50%; background:#222; color:#fff; font:12px/13px "Segoe UI",sans-serif; cursor:pointer; } .tab-button:hover .tab-close, .tab-button:focus .tab-close, .tab-close:focus { display:flex; }
 .tabs-bar { display:flex; align-items:flex-start; border-bottom:1px solid #555; margin-bottom:8px; } .tabs-bar .document-tabs { flex:1; margin:0; border:0; } header { justify-content:flex-end; margin-bottom:0; } #history-list { border:1px solid #666; background:#353535; padding:4px; max-height:180px; overflow:auto; } #history-list sp-action-button { display:block; }
 
 .editor-toolbar { display:flex; align-items:center; justify-content:flex-start; flex-wrap:wrap; width:100%; min-width:0; margin:0 0 6px; min-height:28px; }
@@ -20,6 +20,7 @@ html,body { max-width:100%; overflow-x:hidden; }
 .prompt-editor { position:relative; margin:0; padding:0; }
 .prompt-editor textarea { display:block; width:100%; height:56px; min-height:56px; max-height:320px; margin:0; padding:8px 8px 34px; appearance:none; -webkit-appearance:none; background:#353535; border:1px solid #666; border-radius:4px; box-shadow:none; outline:0; resize:none; overflow-y:auto; line-height:18px; }
 .prompt-editor textarea:focus { border-color:#4388d6; box-shadow:none; }
+.prompt-editor textarea:read-only { color:#f2f2f2; -webkit-text-fill-color:#f2f2f2; opacity:1; cursor:text; }
 .prompt-actions { position:absolute; right:4px; bottom:4px; display:flex; }
 .prompt-actions sp-action-button { height:26px; min-width:0; padding:0 7px; margin-left:4px; font-size:11px; }
 #input-notice { font-size:11px; color:#ccc; margin:3px 0 0; }
@@ -36,7 +37,7 @@ html,body { max-width:100%; overflow-x:hidden; }
 .reference-thumb:active { cursor:grabbing; border-color:#8ab4ff; }
 .reference-thumb img { pointer-events:none; }
 .dropzone.dragging { border-color:#8ab4ff; background:#33445d; }
-.thumb .remove-reference { position:absolute; top:2px; right:2px; min-width:20px; height:20px; padding:0; background:#222; color:#fff; border:0; border-radius:3px; cursor:pointer; }
+#reference-thumbs .reference-thumb .remove-reference { position:absolute; z-index:4; top:3px; right:3px; width:18px; min-width:18px; max-width:18px; height:18px; min-height:18px; padding:0; display:flex; align-items:center; justify-content:center; background:#222; color:#fff; border:0; border-radius:50%; font:14px/18px "Segoe UI",sans-serif; cursor:pointer; }
 #task-page { margin-top:8px; }
 .task-message { color:#ccc; font-size:12px; line-height:18px; margin:8px 0; }
 .task-error { color:#ffb6b6; }
@@ -49,7 +50,12 @@ html,body { max-width:100%; overflow-x:hidden; }
 .task-result .task-actions button { display:inline-flex; align-items:center; justify-content:center; flex:0 0 27px; width:27px; min-width:27px; height:24px; margin:0; padding:0; font:17px/1 "Segoe UI Symbol","Microsoft YaHei",sans-serif; }
 .task-result .task-actions button:first-child { margin-right:auto; color:#fff; }
 .task-result .task-actions button:hover, .task-result .task-actions button:focus { background:#565656; border-color:#999; }
-.task-history { display:flex; flex-wrap:wrap; gap:5px; margin:8px 0; }
+.task-history { display:flex; flex-direction:column; gap:5px; margin:8px 0; }
+.history-bulk-controls,.history-entry { display:flex; align-items:center; gap:5px; }
+.history-bulk-controls { flex-wrap:wrap; margin-bottom:3px; }
+.history-entry > button:nth-child(1):not(.history-choose),.history-entry > button:nth-child(2) { flex:1; text-align:left; }
+.history-choose { flex:0 0 26px; width:26px; padding:4px!important; font-size:18px; }
+.history-bulk-controls button:disabled { opacity:.45; cursor:default; }
 .task-history .clear-history { margin-left:auto; }
 .clear-history.armed { color:#ffb6b6; border-color:#b66; }
 #history-list sp-action-button.clear-history { grid-column:1 / -1; width:100%; height:26px; font-size:11px; }
@@ -58,6 +64,11 @@ html,body { max-width:100%; overflow-x:hidden; }
 .task-preview .task-actions { display:flex; justify-content:space-between; gap:8px; }
 .dropzone { gap:2px; }
 .dropzone sp-action-button { min-width:0; font-size:11px; height:23px; }
+.settings-inline { display:flex; gap:6px; align-items:center; }
+.settings-inline input { flex:1; min-width:0; }
+.settings-inline sp-action-button { flex:0 0 auto; }
+.saved-models { display:flex; flex-wrap:wrap; gap:5px; margin:7px 0; }
+.saved-models button { max-width:100%; padding:3px 6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink); background:var(--surface); border:1px solid var(--line); border-radius:4px; cursor:pointer; }
 
 .thumb .annotate-reference { position:absolute; right:3px; bottom:23px; z-index:3; display:flex; align-items:center; justify-content:center; width:24px; min-width:24px; height:24px; padding:0; color:#fff; background:#303030; border:1px solid #888; border-radius:4px; font:18px/1 "Segoe UI Symbol",sans-serif; cursor:pointer; }
 .thumb .annotate-reference:hover { background:#176fd1; }

@@ -1454,6 +1454,20 @@ async function placeAsEditableSmartObject(fileToken, bounds, targetDoc) {
     };
 }
 
+async function placeGeneratedAsLayer(fileToken) {
+    const doc = app.activeDocument;
+    if (!doc) throw new Error('请先打开 Photoshop 文档，或点击保存原图。');
+    await core.executeAsModal(async (executionContext) => {
+        const suspensionID = await executionContext.hostControl.suspendHistory({documentID:doc.id,name:'添加生成图片图层'});
+        let commit = true;
+        try {
+            if (!app.activeDocument || app.activeDocument.id !== doc.id) throw new Error('当前文档已切换，请重新添加图片。');
+            await action.batchPlay([{_obj:'placeEvent',null:{_path:fileToken,_kind:'local'},linked:false}],{synchronousExecution:true});
+        } catch (error) { commit = false; throw error; }
+        finally { await executionContext.hostControl.resumeHistory(suspensionID,commit); }
+    },{commandName:'添加生成图片图层'});
+}
+
 /**
  * Performs the Smart Object Native Masking Workflow:
  * 1. Renames the active Smart Object layer to "[ai mask] {originalName}".
@@ -1652,6 +1666,7 @@ module.exports = {
     captureSelection,
     imageDataToDataURL,
     placeBack,
+    placeGeneratedAsLayer,
     getActiveLayerInfo,
     MASK_FEATHER
 };

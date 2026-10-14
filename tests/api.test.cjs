@@ -1,6 +1,18 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { MODELS, MediaClient, imageSources } = require('../plugin/api');
+const { TaskQueue } = require('../plugin/task-queue');
+
+test('completed status with image becomes a candidate without placing a layer', async () => {
+  for (const state of ['SUCCESS','completed','succeeded']) {
+    const task={id:'existing',state:'running',results:[]};
+    const job={id:'job',state:'running',tasks:[task]};
+    const queue=new TaskQueue({jobs:[job],persist:()=>{},onChange:()=>{},client:async()=>({status:async()=>({data:{state,output:{images:[{url:'https://img.example/result.png'}]}}})})});
+    await queue.tick();
+    assert.equal(task.state,'ready');
+    assert.deepEqual(task.results,[{source:'https://img.example/result.png',imported:false}]);
+  }
+});
 
 test('keeps exactly the original five choices plus the three requested image models', () => {
   assert.deepEqual(MODELS.map(model => model.id), ['banana-2','banana-pro','tt-image-2','tt-image-2.5','doubao-seedream-5-0-pro-260628','gk-image-2.0','qwen-image-max','custom']);
@@ -35,6 +47,10 @@ test('explains LK888 gateway 502 without resubmitting the image task', async () 
   await assert.rejects(api.submit('gk-image-2.0', '编辑图片', ['source']), /上游模型返回 502/);
   assert.equal(count, 1);
 });
+test('HTTP 200 business errors show the provider reason instead of a misleading status', async () => {
+  const api = new MediaClient('test-key', async () => ({ok:true,status:200,json:async()=>({error:{msg:'模型不支持上传图片'}})}));
+  await assert.rejects(api.submit('banana-2','测试',['data:image/png;base64,YQ==']),/模型不支持上传图片/);
+});
 
 test('status resumes the same task using GET and URL encoding', async () => {
   let call;
@@ -47,7 +63,7 @@ test('status resumes the same task using GET and URL encoding', async () => {
 
 test('recognizes nested URL, serialized result arrays, base64 and Gemini inline images', () => {
   assert.deepEqual(imageSources({ data: { result_url: '["https://img.example/a.png"]', images: [{ url: 'https://img.example/b.png' }], b64_json: 'YWJj', parts: [{ inlineData: { mimeType: 'image/jpeg', data: 'eHl6' } }] } }), ['https://img.example/a.png', 'https://img.example/b.png', 'data:image/png;base64,YWJj', 'data:image/jpeg;base64,eHl6']);
-  assert.deepEqual(imageSources({ output_url: 'http://unsafe.example/a.png' }), []);
+  assert.deepEqual(imageSources({ output_url: 'http://img.example/a.png' }), ['http://img.example/a.png']);
 });
 
 test('reports authentication errors without returning secret values', async () => {
@@ -61,4 +77,10 @@ test('reads actual API model ids from the authenticated models endpoint', async 
   assert.deepEqual((await api.models()).map(m=>m.id), ['seedream-edit','banana-2']);
   assert.equal(call.url,'https://api.lk888.ai/v1/models');
   assert.equal(call.options.method,'GET');
+});
+
+test('recognizes serialized result containers and alternate image fields without leaking unrelated URLs',()=>{
+ assert.deepEqual(imageSources({data:{result:JSON.stringify({outputs:[{uri:'http://cdn.example/a.png'},{download_url:'https://cdn.example/b.png'}]})},images:['https://cdn.example/b.png'],metadata:{url:'https://cdn.example/meta'},message:'https://cdn.example/help'}),['http://cdn.example/a.png','https://cdn.example/b.png']);
+ assert.deepEqual(imageSources({data:{output:JSON.stringify(['https://cdn.example/one.png']),result_urls:['https://cdn.example/two.png'],generated_images:[{src:'https://cdn.example/three.png'}]}}),['https://cdn.example/one.png','https://cdn.example/two.png','https://cdn.example/three.png']);
+ assert.deepEqual(imageSources({result:'not json',url:'javascript:alert(1)',image_url:'https://user:password@cdn.example/private',base64:'bad value',error:{message:'https://cdn.example/error'}}),[]);
 });

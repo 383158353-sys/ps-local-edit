@@ -77,7 +77,7 @@ class PromptEditor {
   }
   setBusy(busy){
     if(this.busy===busy)return;this.busy=busy;
-    this.node.disabled=busy;this.voiceButton.disabled=busy;if(this.expandButton)this.expandButton.disabled=busy;
+    this.node.readOnly=busy;this.voiceButton.disabled=busy;if(this.expandButton)this.expandButton.disabled=busy;
   }
   insert(value){
     if(this.busy||typeof value!=='string')return;

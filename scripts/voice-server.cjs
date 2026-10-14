@@ -35,10 +35,10 @@ function readClipboard() {
   });
 }
 function openDropWindow(id) {
-  return spawn('powershell.exe',['-NoProfile','-Sta','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',path.join(__dirname,'drop-window.ps1'),'-SessionId',id],{windowsHide:true,stdio:'ignore'});
+  return spawn('powershell.exe',['-NoProfile','-Sta','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',path.join(__dirname,'drop-window.ps1'),'-SessionId',id],{windowsHide:false,stdio:'ignore'});
 }
 function openAnnotationWindow(id) {
-  return spawn('powershell.exe',['-NoProfile','-Sta','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',path.join(__dirname,'annotation-window.ps1'),'-SessionId',id],{windowsHide:true,stdio:'ignore'});
+  return spawn('powershell.exe',['-NoProfile','-Sta','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',path.join(__dirname,'annotation-window.ps1'),'-SessionId',id],{windowsHide:false,stdio:'ignore'});
 }
 function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboard, dropWindowLauncher = openDropWindow, annotationWindowLauncher = openAnnotationWindow } = {}) {
   let active = null, readiness = { state: 'starting' };
