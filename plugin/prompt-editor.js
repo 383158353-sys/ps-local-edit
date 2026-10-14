@@ -1,7 +1,8 @@
+const { gatherDroppedImages, mimeForFile, bytesToBase64 } = require('./drop-images');
 // Native UXP textarea keeps Photoshop keyboard focus out of embedded WebViews.
 class PromptEditor {
-  constructor({node,voiceButton,expandButton,container,clipboard,onChange,onImage,onNotice,onVoice,context=()=>null,readImageClipboard}) {
-    Object.assign(this,{node,voiceButton,expandButton,container,clipboard,onChange,onImage,onNotice,onVoice,context,readImageClipboard});
+  constructor({node,voiceButton,expandButton,container,clipboard,onChange,onImage,onNotice,onVoice,context=()=>null,readImageClipboard,readHelperClipboard}) {
+    Object.assign(this,{node,voiceButton,expandButton,container,clipboard,onChange,onImage,onNotice,onVoice,context,readImageClipboard,readHelperClipboard});
     this.busy=false;this.pasting=false;this.voiceState='idle';this.pendingPaste=null;this.pasteFallbackTimer=null;
     node.addEventListener('input',()=>this.changed());
     node.addEventListener('keydown',event=>{
@@ -49,17 +50,28 @@ class PromptEditor {
     this.node.style.height=Math.min(320,Math.max(56,measured))+'px';
   }
   clipboardImage(event){
-    const clipboard=event?.clipboardData;if(!clipboard)return null;
-    const supported=type=>/^image\/(png|jpeg|webp)$/i.test(type||'');
-    if(clipboard.files?.length){for(const file of clipboard.files)if(supported(file.type))return file;}
-    for(const item of Array.from(clipboard.items||[]))if(supported(item.type)){const file=item.getAsFile?.();if(file)return file;}
-    return null;
+    try{const gathered=gatherDroppedImages(event?.clipboardData);return gathered.images[0]||null;}catch(_){return null;}
+  }
+  async helperImage(){
+    if(typeof this.readHelperClipboard!=='function')return null;
+    try{
+      const result=await this.readHelperClipboard();
+      if(!result||result.success===false)return null;
+      const image=typeof result==='string'?result:result.image;
+      if(typeof image==='string'&&/^data:image\/(png|jpeg|webp);base64,/i.test(image))return image;
+      return null;
+    }catch(_){return null;}
   }
   async addClipboardImage(file,context){
     if(this.busy||context!==this.context())return;
-    const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('读取剪贴板图片失败。'));reader.readAsDataURL(file);});
+    const mime=mimeForFile(file);
+    if(!mime)throw new Error('剪贴板图片格式暂不支持。');
+    let data=typeof file.dataUrl==='string'?file.dataUrl:null;
+    if(!data&&typeof file.arrayBuffer==='function')data='data:'+mime+';base64,'+bytesToBase64(new Uint8Array(await file.arrayBuffer()));
+    if(!data&&typeof FileReader!=='undefined')data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve('data:'+mime+';base64,'+String(reader.result||'').split(',')[1]);reader.onerror=()=>reject(new Error('请将图片另存到文件夹再拖入，或复制后粘贴。'));reader.readAsDataURL(file);});
+    if(!data)throw new Error('请将图片另存到文件夹再拖入，或复制后粘贴。');
     if(context!==this.context()||this.busy)return;
-    if(typeof data!=='string'||!/^data:image\/(png|jpeg|webp);base64,/.test(data))throw new Error('剪贴板图片格式暂不支持。');
+    if(!/^data:image\/(png|jpeg|webp);base64,/.test(data))throw new Error('剪贴板图片格式暂不支持。');
     await this.onImage(data);this.onNotice('截图已添加到参考图。');
   }
   handlePaste(event){
@@ -107,6 +119,9 @@ class PromptEditor {
       if(typeof data.image==='string'){await this.onImage(data.image);this.onNotice('截图已添加到参考图。');return;}
       if(typeof data.text==='string'&&data.text.length){this.insert(data.text);this.onNotice('');return;}
       if(typeof contents?.['text/plain']==='string'&&contents['text/plain'].length){this.insert(contents['text/plain']);this.onNotice('');return;}
+      const helped=await this.helperImage();
+      if(context!==this.context()||this.busy)return;
+      if(helped){await this.onImage(helped);this.onNotice('截图已添加到参考图。');return;}
       this.onNotice(bridgeError?.message||'剪贴板里没有文字或截图。',!!bridgeError);
       if(typeof this.node.focus==='function')this.node.focus();
     }catch(error){this.onNotice(error.message||'粘贴失败，请重新复制后再试。',true);}
@@ -133,6 +148,9 @@ class PromptEditor {
           await this.onImage('data:'+type.toLowerCase()+';base64,'+btoa(encoded));this.onNotice('截图已添加到参考图。');return;
         }
       }
+      const helped=await this.helperImage();
+      if(context!==this.context()||this.busy)return;
+      if(helped){await this.onImage(helped);this.onNotice('图片已添加到参考图。');return;}
       throw bridgeError||new Error('剪贴板中没有图片，请先复制截图或图片文件。');
     }catch(error){this.onNotice(error.message||'粘贴图片失败。',true);}
     finally{this.pasting=false;}

@@ -1,11 +1,125 @@
-<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><style>*{box-sizing:border-box}body{margin:0;background:#292929;color:#f2f2f2;font:13px "Segoe UI","Microsoft YaHei",sans-serif}#row{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}.tile,#drop{width:82px;height:88px;border:1px solid #666;border-radius:4px;background:#353535;position:relative;overflow:hidden}.tile img{width:100%;height:62px;object-fit:contain}.tile span.name{display:block;font-size:10px;padding:3px;overflow:hidden;white-space:nowrap}.badge{position:absolute;top:3px;left:3px;background:#222;padding:2px 5px;border-radius:3px}#drop{border-style:dashed;display:flex;align-items:center;justify-content:center;flex-direction:column;width:104px;cursor:pointer}#drop.drag{border-color:#9cc5ff;background:#3c4652}small{color:#ccc;font-size:10px}label{display:block;margin-bottom:6px}textarea{width:100%;height:94px;background:#353535;color:white;border:1px solid #666;border-radius:4px;padding:8px 8px 32px;resize:none;font:inherit}textarea::placeholder{color:#ccc}#notice{color:#ffb6b6;font-size:11px;min-height:14px;margin:4px 0}button{position:absolute;right:2px;top:2px;color:white;background:#333;border:0;cursor:pointer}#files{display:none}</style></head><body><div id="row"></div><p id="notice"></p><input id="files" type="file" accept="image/png,image/jpeg,image/webp" multiple><script>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#292929;color:#f2f2f2;font:13px "Segoe UI","Microsoft YaHei",sans-serif}
+#row{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
+.tile,#drop{width:82px;height:88px;border:1px solid #666;border-radius:4px;background:#353535;position:relative;overflow:hidden}
+.tile img{width:100%;height:62px;object-fit:contain}
+.tile span.name{display:block;font-size:10px;padding:3px;overflow:hidden;white-space:nowrap}
+.badge{position:absolute;top:3px;left:3px;background:#222;padding:2px 5px;border-radius:3px}
+#drop{border-style:dashed;display:flex;align-items:center;justify-content:center;flex-direction:column;width:104px;cursor:pointer;text-align:center}
+#drop.drag{border-color:#9cc5ff;background:#3c4652}
+small{color:#ccc;font-size:10px}
+#notice{color:#ffb6b6;font-size:11px;min-height:14px;margin:4px 0}
+button.remove{position:absolute;right:2px;top:2px;color:white;background:#333;border:0;cursor:pointer}
+#files{display:none}
+</style>
+</head>
+<body>
+<div id="row"></div>
+<p id="notice"></p>
+<input id="files" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" multiple>
+<script src="drop-images.js"></script>
+<script>
 const row=document.getElementById('row'),notice=document.getElementById('notice');
+const Drop=globalThis.DropImages;
 let state={source:null,references:[],busy:false},signature='';
 function send(data){if(window.uxpHost)window.uxpHost.postMessage(JSON.stringify(data));else window.parent.postMessage(data,'*');}
-function render(){const next=JSON.stringify([state.source,state.references]);if(signature===next){send({type:'height',height:document.body.scrollHeight});return;}signature=next;row.replaceChildren();[state.source||{name:'尚未读取选区'},...state.references].forEach((ref,i)=>{const tile=document.createElement('div');tile.className='tile';const badge=document.createElement('span');badge.className='badge';badge.textContent=i+1;tile.append(badge);if(ref.data){const img=document.createElement('img');img.src=ref.data;tile.append(img);}const name=document.createElement('span');name.className='name';name.textContent=ref.name;tile.append(name);if(i){const remove=document.createElement('button');remove.textContent='×';remove.onclick=()=>send({type:'removeReference',index:i-1});tile.append(remove);}row.append(tile);});const drop=document.createElement('div');drop.id='drop';drop.innerHTML='＋ 添加图片<br><small>拖入文件 / 粘贴截图</small>';drop.onclick=()=>{if(!state.busy)document.getElementById('files').click();};row.append(drop);send({type:'height',height:document.body.scrollHeight});}
-async function add(files){if(state.busy)return;notice.textContent='';const images=Array.from(files).filter(f=>/^image\/(png|jpeg|webp)$/.test(f.type));if(!images.length){notice.textContent='请拖入 PNG、JPG 或 WebP 图片。';return;}if(images.length+state.references.length>5){notice.textContent='最多添加5张参考图。';return;}const refs=[];for(const file of images){if(file.size>10*1024*1024){notice.textContent='每张图片不超过10MB。';return;}const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(file);});refs.push({name:file.name||'截图.png',data});}send({type:'addReferences',references:refs});}
-document.addEventListener('dragover',e=>{e.preventDefault();e.dataTransfer.dropEffect='copy';document.getElementById('drop').classList.add('drag');});document.addEventListener('dragleave',()=>document.getElementById('drop').classList.remove('drag'));document.addEventListener('drop',e=>{e.preventDefault();document.getElementById('drop').classList.remove('drag');add(e.dataTransfer.files).catch(()=>notice.textContent='读取文件失败。');});
-document.addEventListener('paste',e=>{const files=e.clipboardData&&e.clipboardData.files;if(files&&files.length){e.preventDefault();add(files).catch(()=>notice.textContent='读取截图失败。');}});
-document.getElementById('files').onchange=e=>{add(e.target.files);e.target.value='';};
-window.addEventListener('message',e=>{let data=e.data;try{if(typeof data==='string')data=JSON.parse(data);}catch(_){return;}if(data?.type==='state'){state=data;render();}});render();send({type:'ready',version:'native-prompt-2'});
-</script></body></html>
+function render(){
+  const next=JSON.stringify([state.source,state.references]);
+  if(signature===next){send({type:'height',height:document.body.scrollHeight});return;}
+  signature=next;row.replaceChildren();
+  [state.source||{name:'尚未读取选区'},...state.references].forEach((ref,i)=>{
+    const tile=document.createElement('div');tile.className='tile';tile.dataset.index=String(i);
+    const badge=document.createElement('span');badge.className='badge';badge.textContent=i+1;tile.append(badge);
+    if(ref.data){const img=document.createElement('img');img.src=ref.data;tile.append(img);}
+    const name=document.createElement('span');name.className='name';name.textContent=ref.name;tile.append(name);
+    if(i){const remove=document.createElement('button');remove.className='remove';remove.textContent='×';remove.onclick=()=>send({type:'removeReference',index:i-1});tile.append(remove);}
+    row.append(tile);
+  });
+  const drop=document.createElement('div');drop.id='drop';
+  drop.innerHTML='＋ 添加图片<br><small>粘贴图片 / 拖入图片新增</small>';
+  drop.onclick=()=>{if(!state.busy)document.getElementById('files').click();};
+  row.append(drop);
+  send({type:'height',height:document.body.scrollHeight});
+}
+function tileReplaceIndex(target){
+  let node=target;
+  while(node&&node!==row){
+    if(node.classList&&node.classList.contains('tile')){
+      const index=Number(node.dataset.index);
+      return index>0?index-1:null;
+    }
+    node=node.parentNode;
+  }
+  return null;
+}
+async function publish(files,replaceIndex){
+  if(state.busy)return;
+  notice.textContent='';
+  if(files.some(file=>Number.isFinite(Number(file.size))&&Number(file.size)>Drop.MAX_IMAGE_BYTES)){notice.textContent='每张图片不超过10MB。';return;}
+  const replacing=Number.isInteger(replaceIndex)&&replaceIndex>=0&&replaceIndex<state.references.length;
+  if(state.references.length-(replacing?1:0)+files.length>5){notice.textContent='最多添加5张参考图。';return;}
+  const refs=[];
+  for(const file of files)refs.push({name:Drop.fileLabel(file),data:await Drop.readImageFileAsDataUrl(file)});
+  if(!replacing){send({type:'addReferences',references:refs});return;}
+  send({type:'replaceReference',index:replaceIndex,reference:refs[0]});
+  if(refs.length>1)send({type:'addReferences',references:refs.slice(1)});
+}
+function showFailure(error){notice.textContent=(error&&error.message)||Drop.WECHAT_DROP_HINT;}
+async function helperClipboardImage(){
+  if(typeof globalThis.readClipboard!=='function')return null;
+  try{
+    const result=await Promise.race([
+      Promise.resolve().then(()=>globalThis.readClipboard()),
+      new Promise(resolve=>setTimeout(()=>resolve(null),800))
+    ]);
+    if(!result||result.success===false)return null;
+    const image=typeof result==='string'?result:result.image;
+    return typeof image==='string'&&/^data:image\/(png|jpeg|webp);base64,/i.test(image)?image:null;
+  }catch(_){return null;}
+}
+document.addEventListener('dragover',event=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='copy';const drop=document.getElementById('drop');if(drop)drop.classList.add('drag');});
+document.addEventListener('dragleave',()=>{const drop=document.getElementById('drop');if(drop)drop.classList.remove('drag');});
+document.addEventListener('drop',event=>{
+  event.preventDefault();
+  const drop=document.getElementById('drop');if(drop)drop.classList.remove('drag');
+  const replaceIndex=tileReplaceIndex(event.target);
+  const pending=collectDroppedImages(event.dataTransfer);
+  pending.then(collected=>{
+    if(!collected.images.length){notice.textContent=collected.notice||Drop.WECHAT_DROP_HINT;return;}
+    return publish(collected.images,replaceIndex);
+  }).catch(showFailure);
+});
+document.addEventListener('paste',event=>{
+  const pending=collectDroppedImages(event.clipboardData);
+  event.preventDefault();
+  pending.then(async collected=>{
+    if(collected.images.length){await publish(collected.images,null);return;}
+    const image=await helperClipboardImage();
+    if(image){await publish([{name:'截图.png',type:'image/png',size:image.length,dataUrl:image}],null);return;}
+    notice.textContent='剪贴板里没有图片。请复制图片后粘贴，或将图片另存到文件夹再拖入。';
+  }).catch(showFailure);
+});
+document.getElementById('files').onchange=event=>{
+  const files=event.target.files;
+  event.target.value='';
+  if(!files||!files.length)return;
+  collectDroppedImages({files}).then(collected=>{
+    if(!collected.images.length){notice.textContent=collected.notice||Drop.WECHAT_DROP_HINT;return;}
+    return publish(collected.images,null);
+  }).catch(showFailure);
+};
+window.addEventListener('message',event=>{
+  let data=event.data;
+  try{if(typeof data==='string')data=JSON.parse(data);}catch(_){return;}
+  if(data&&data.type==='state'){state=data;render();}
+});
+render();
+send({type:'ready',version:'native-prompt-2'});
+</script>
+</body>
+</html>
