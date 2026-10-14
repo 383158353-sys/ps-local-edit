@@ -16,3 +16,6 @@ diagnostics/
 dist/*preview-*.png
 dist/局部改图-LK888-*.ccx
 !dist/局部改图-LK888-0.4.2.ccx
+
+# ASCII-named copies uploaded as release assets
+dist/ps-local-edit-LK888-*.ccx

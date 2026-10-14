@@ -22,7 +22,7 @@ Photoshop 内的简洁 UXP 面板，通过 https://api.lk888.ai 调用生图模�
 
 清单要求 Photoshop 25.0（2024）及以上，使用 RGB 文档。不同宿主版本仍需实际验证。
 
-1. 从 [Releases](https://github.com/doke69/ps-local-edit/releases/latest) 下载 `局部改图-LK888-0.4.2.ccx`。
+1. 从 [Releases](https://github.com/doke69/ps-local-edit/releases/latest) 下载 `ps-local-edit-LK888-0.4.2.ccx`。
 2. 安装 [OpenUXP Installer](https://moonvy.com/apps/upx-installer/)，保存文件并退出 PS，把 `.ccx` 拖入安装器，核对名称、版本与 Photoshop 宿主后安装。该第三方工具支持 macOS、Windows 和 UXP CCX；如官方方式失败，可使用其侧载方式，实际选项以工具版本为准。本包尚未经过 OpenUXP 实机安装验证。
 3. 重启 PS，在“增效工具”打开“局部改图”，到设置保存 LK888 API Key，检查连接并同步模型。
 4. 框选或套索选中区域，读取选区，填写要求、选择参数并生成；点击候选结果添加图层。
