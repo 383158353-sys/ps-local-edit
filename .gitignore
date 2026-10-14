@@ -8,3 +8,11 @@ node_modules/
 *.tmp
 .DS_Store
 Thumbs.db
+
+# Local installation backups and machine diagnostics
+.uninstalled-plugins/
+diagnostics/
+# Historical local packages and UI snapshots; keep the current delivery
+dist/*preview-*.png
+dist/局部改图-LK888-*.ccx
+!dist/局部改图-LK888-0.3.10.ccx
