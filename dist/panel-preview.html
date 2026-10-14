@@ -3150,8 +3150,8 @@ factories["./prompt-editor"]=function(module,exports,require){
 const {setButtonDisabled}=require('./ui-controls');
 // Native UXP textarea keeps Photoshop keyboard focus out of embedded WebViews.
 class PromptEditor {
-  constructor({node,voiceButton,expandButton,container,clipboard,onChange,onImage,onNotice,onVoice,context=()=>null,readImageClipboard}) {
-    Object.assign(this,{node,voiceButton,expandButton,container,clipboard,onChange,onImage,onNotice,onVoice,context,readImageClipboard});
+  constructor({node,voiceButton,expandButton,container,clipboard,onChange,onImage,onNotice,onVoice,context=()=>null,readImageClipboard,platform=''}) {
+    Object.assign(this,{node,voiceButton,expandButton,container,clipboard,onChange,onImage,onNotice,onVoice,context,readImageClipboard,platform});
     this.busy=false;this.pasting=false;this.voiceState='idle';this.pendingPaste=null;this.pasteFallbackTimer=null;
     node.addEventListener('input',()=>this.changed());
     node.addEventListener('keydown',event=>{
@@ -3174,7 +3174,9 @@ class PromptEditor {
     node.addEventListener('keyup',event=>event.stopPropagation());
     node.addEventListener('paste',event=>this.handlePaste(event));
     voiceButton.addEventListener('mousedown',event=>event.preventDefault());
-    voiceButton.addEventListener('click',()=>{if(!this.busy)this.onVoice(['starting','listening','stopping'].includes(this.voiceState)?'stop':'start');});
+    voiceButton.title=platform==='darwin'?'macOS 系统听写设置与使用方法':'先启动 Windows 本机语音助手，再点击开始听写';
+    voiceButton.textContent=platform==='darwin'?'听写帮助':'语音';
+    voiceButton.addEventListener('click',()=>{if(this.busy)return;if(this.platform==='darwin'){this.node.focus();this.onNotice('Mac：在系统设置 → 键盘 → 听写中开启中文听写；点击文字区后使用该处设置的听写快捷键。插件的本机语音助手目前仅支持 Windows。');return;}this.onVoice(['starting','listening','stopping'].includes(this.voiceState)?'stop':'start');});
     if(expandButton){
       expandButton.addEventListener('mousedown',event=>event.preventDefault());
       expandButton.addEventListener('click',()=>this.setExpanded(!this.container?.classList?.contains('expanded')));
@@ -3193,10 +3195,7 @@ class PromptEditor {
   changed(){this.resize();this.onChange(this.node.value);}
   resize(){
     if(!this.node.style)return;
-    this.node.style.height='56px';
-    const estimatedLines=String(this.node.value||'').split('\n').reduce((count,line)=>count+Math.max(1,Math.ceil(line.length/32)),0);
-    const measured=Number(this.node.scrollHeight)||estimatedLines*18+42;
-    this.node.style.height=Math.min(320,Math.max(56,measured))+'px';
+    this.node.style.width='100%';this.node.style.margin='0';
   }
   clipboardImage(event){
     const clipboard=event?.clipboardData;if(!clipboard)return null;
@@ -3288,7 +3287,7 @@ class PromptEditor {
     finally{this.pasting=false;}
   }
   voice(data){
-    this.voiceState=data.state;this.voiceButton.textContent=['starting','listening','stopping'].includes(data.state)?'⏹ 停止':'🎙 语音';
+    this.voiceState=data.state;this.voiceButton.textContent=['starting','listening','stopping'].includes(data.state)?'停止':this.platform==='darwin'?'听写帮助':'语音';
     this.onNotice(data.message||'',data.state==='error');
   }
 }
@@ -3341,6 +3340,7 @@ cache['./voice']={exports:{VoiceController:class{cancel(){}stop(){}start(){}asyn
 const originalAPI=require('./api');cache['./api']={exports:{...originalAPI,MediaClient:PreviewClient}};
 
 const {setButtonDisabled,createUiButton,initButtons}=require('./ui-controls');
+let hostPlatform='';try{hostPlatform=require('os').platform();}catch(_){}
 const { app, imaging, constants, action } = require('photoshop');
 const { storage, shell } = require('uxp');
 const ps = require('./modules/ps');
@@ -3904,7 +3904,7 @@ async function init() {
   if (initialized) return; initialized = true;initChoices(document);initButtons(document);
   fillChoices('count',[1,2,3,4].map(n=>({value:String(n),label:n+'张'})),'1','1');
   fillChoices('model-filter',[{value:'all',label:'全部模型（图像优先）'},{value:'image',label:'仅图像候选'},{value:'favorites',label:'仅收藏'}],'all','all');
-  if(typeof navigator!=='undefined')voice.request('/health').then(data=>console.log('Local voice helper: '+data.state+' '+(data.language||''))).catch(()=>console.log('Local voice helper unavailable; start with the local launcher.'));
+  if(hostPlatform!=='darwin'&&typeof navigator!=='undefined')voice.request('/health').then(data=>console.log('Local voice helper: '+data.state+' '+(data.language||''))).catch(()=>console.log('Local voice helper unavailable; start with the local launcher.'));
   try { job = JSON.parse(localStorage.getItem('lk888-job') || 'null'); } catch (_) {}
   if (job && !job.imported && fs.getDataFolder) {
     try {
@@ -3941,7 +3941,7 @@ async function init() {
   queue.jobs.forEach((j,i)=>{j.number ||= queue.jobs.length-i;j.title ||= '局部改图 '+j.number;});
   queue.tick();settingsPage(false);const reloadJobId=localStorage.getItem('lk888-reload-job-id');localStorage.removeItem('lk888-reload-job-id');if(queue.jobs.length)await openHistory(queue.jobs.find(j=>j.id===reloadJobId)?.id||queue.jobs[0].id);
   $('settings-toggle').addEventListener('click', () => settingsPage(!settingsOpen));
-  promptEditor=new PromptEditor({node:$('prompt'),voiceButton:$('voice-prompt'),expandButton:$('expand-prompt'),container:$('prompt').parentElement,clipboard:typeof navigator!=='undefined'?navigator.clipboard:null,context:()=>selectedJobId,onChange:value=>localStorage.setItem('lk888-prompt',value),onNotice:(message,error)=>{const note=$('input-notice');note.textContent=message;note.className=error?'error':'';},onVoice:kind=>{if(kind==='stop')voice.stop();else voice.start();},readImageClipboard:()=>voice.request('/clipboard'),onImage:async data=>{if(references.length>=5)throw new Error('最多添加5张参考图。');const match=typeof data==='string'&&data.match(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i);if(!match||data.length>14*1024*1024)throw new Error('截图格式或大小无效。');references.push({name:'截图.'+(match[1].toLowerCase()==='jpeg'?'jpg':match[1].toLowerCase()),data});syncInputs();}});
+  promptEditor=new PromptEditor({platform:hostPlatform,node:$('prompt'),voiceButton:$('voice-prompt'),expandButton:$('expand-prompt'),container:$('prompt').parentElement,clipboard:typeof navigator!=='undefined'?navigator.clipboard:null,context:()=>selectedJobId,onChange:value=>localStorage.setItem('lk888-prompt',value),onNotice:(message,error)=>{const note=$('input-notice');note.textContent=message;note.className=error?'error':'';},onVoice:kind=>{if(kind==='stop')voice.stop();else voice.start();},readImageClipboard:()=>voice.request('/clipboard'),onImage:async data=>{if(references.length>=5)throw new Error('最多添加5张参考图。');const match=typeof data==='string'&&data.match(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i);if(!match||data.length>14*1024*1024)throw new Error('截图格式或大小无效。');references.push({name:'截图.'+(match[1].toLowerCase()==='jpeg'?'jpg':match[1].toLowerCase()),data});syncInputs();}});
   promptEditor.resize();
   console.log('Native prompt editor ready; clipboard access: '+(typeof navigator!=='undefined' && !!navigator.clipboard));
   $('restore-result').addEventListener('click',()=>{if(job && !job.imported && !job.source){status('先处理当前任务。',true);return;}const saved=localStorage.getItem('lk888-last-result');if(!saved){status('暂无上次结果。');return;}job=JSON.parse(saved);capture=null;sourceImage=null;saveJob();refresh();status('已恢复上次结果，可点击保存结果。');});

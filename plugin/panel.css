@@ -192,3 +192,12 @@ main { min-width:0; padding:10px 12px; }
 .prompt-editor.expanded textarea { height:100% !important; min-height:0; max-height:100%; }
 @media (max-width:320px) { .options { flex-wrap:wrap; } .options .model-option { flex:0 0 100%; margin-right:0; } }
 @media (max-height:700px) { .task-result img { height:60px; } .result-footnote { display:none; } }
+
+/* Avoid textarea's host margin and large padding creating an inset native editor. */
+.prompt-editor { display:flex; flex-direction:column; width:100%; padding:0; }
+.prompt-editor textarea { flex:0 0 48px; width:100%; min-width:0; margin:0; padding:6px 8px; height:48px !important; min-height:48px; max-height:48px; background:var(--surface); }
+.prompt-actions { position:static; display:flex; flex:0 0 26px; height:26px; align-items:center; justify-content:flex-end; width:100%; padding:0 5px 4px; background:var(--surface); }
+.prompt-actions .ui-button { height:21px; }
+.prompt-editor.expanded { display:flex; padding:0; overflow:hidden; }
+.prompt-editor.expanded textarea { flex:1 1 auto; height:100% !important; min-height:0; max-height:100%; }
+.prompt-editor.expanded .prompt-actions { position:static; }

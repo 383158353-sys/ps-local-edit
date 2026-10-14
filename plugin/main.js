@@ -1,4 +1,5 @@
 const {setButtonDisabled,createUiButton,initButtons}=require('./ui-controls');
+let hostPlatform='';try{hostPlatform=require('os').platform();}catch(_){}
 const { app, imaging, constants, action } = require('photoshop');
 const { storage, shell } = require('uxp');
 const ps = require('./modules/ps');
@@ -562,7 +563,7 @@ async function init() {
   if (initialized) return; initialized = true;initChoices(document);initButtons(document);
   fillChoices('count',[1,2,3,4].map(n=>({value:String(n),label:n+'张'})),'1','1');
   fillChoices('model-filter',[{value:'all',label:'全部模型（图像优先）'},{value:'image',label:'仅图像候选'},{value:'favorites',label:'仅收藏'}],'all','all');
-  if(typeof navigator!=='undefined')voice.request('/health').then(data=>console.log('Local voice helper: '+data.state+' '+(data.language||''))).catch(()=>console.log('Local voice helper unavailable; start with the local launcher.'));
+  if(hostPlatform!=='darwin'&&typeof navigator!=='undefined')voice.request('/health').then(data=>console.log('Local voice helper: '+data.state+' '+(data.language||''))).catch(()=>console.log('Local voice helper unavailable; start with the local launcher.'));
   try { job = JSON.parse(localStorage.getItem('lk888-job') || 'null'); } catch (_) {}
   if (job && !job.imported && fs.getDataFolder) {
     try {
@@ -599,7 +600,7 @@ async function init() {
   queue.jobs.forEach((j,i)=>{j.number ||= queue.jobs.length-i;j.title ||= '局部改图 '+j.number;});
   queue.tick();settingsPage(false);const reloadJobId=localStorage.getItem('lk888-reload-job-id');localStorage.removeItem('lk888-reload-job-id');if(queue.jobs.length)await openHistory(queue.jobs.find(j=>j.id===reloadJobId)?.id||queue.jobs[0].id);
   $('settings-toggle').addEventListener('click', () => settingsPage(!settingsOpen));
-  promptEditor=new PromptEditor({node:$('prompt'),voiceButton:$('voice-prompt'),expandButton:$('expand-prompt'),container:$('prompt').parentElement,clipboard:typeof navigator!=='undefined'?navigator.clipboard:null,context:()=>selectedJobId,onChange:value=>localStorage.setItem('lk888-prompt',value),onNotice:(message,error)=>{const note=$('input-notice');note.textContent=message;note.className=error?'error':'';},onVoice:kind=>{if(kind==='stop')voice.stop();else voice.start();},readImageClipboard:()=>voice.request('/clipboard'),onImage:async data=>{if(references.length>=5)throw new Error('最多添加5张参考图。');const match=typeof data==='string'&&data.match(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i);if(!match||data.length>14*1024*1024)throw new Error('截图格式或大小无效。');references.push({name:'截图.'+(match[1].toLowerCase()==='jpeg'?'jpg':match[1].toLowerCase()),data});syncInputs();}});
+  promptEditor=new PromptEditor({platform:hostPlatform,node:$('prompt'),voiceButton:$('voice-prompt'),expandButton:$('expand-prompt'),container:$('prompt').parentElement,clipboard:typeof navigator!=='undefined'?navigator.clipboard:null,context:()=>selectedJobId,onChange:value=>localStorage.setItem('lk888-prompt',value),onNotice:(message,error)=>{const note=$('input-notice');note.textContent=message;note.className=error?'error':'';},onVoice:kind=>{if(kind==='stop')voice.stop();else voice.start();},readImageClipboard:()=>voice.request('/clipboard'),onImage:async data=>{if(references.length>=5)throw new Error('最多添加5张参考图。');const match=typeof data==='string'&&data.match(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i);if(!match||data.length>14*1024*1024)throw new Error('截图格式或大小无效。');references.push({name:'截图.'+(match[1].toLowerCase()==='jpeg'?'jpg':match[1].toLowerCase()),data});syncInputs();}});
   promptEditor.resize();
   console.log('Native prompt editor ready; clipboard access: '+(typeof navigator!=='undefined' && !!navigator.clipboard));
   $('restore-result').addEventListener('click',()=>{if(job && !job.imported && !job.source){status('先处理当前任务。',true);return;}const saved=localStorage.getItem('lk888-last-result');if(!saved){status('暂无上次结果。');return;}job=JSON.parse(saved);capture=null;sourceImage=null;saveJob();refresh();status('已恢复上次结果，可点击保存结果。');});
