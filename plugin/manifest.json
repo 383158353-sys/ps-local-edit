@@ -42,12 +42,6 @@
       "domains": "all"
     },
     "clipboard": "read",
-    "webview": {
-      "allow": "yes",
-      "allowLocalRendering": "yes",
-      "domains": [],
-      "enableMessageBridge": "localAndRemote"
-    },
     "launchProcess": {
       "extensions": [
         ".png",
