@@ -7,6 +7,7 @@ const { TaskQueue }=require('./task-queue');
 const { pngRGBA }=require('./png');
 const { VoiceController }=require('./voice');
 const { PromptEditor }=require('./prompt-editor');
+const { collectDroppedImages, WECHAT_DROP_HINT, mimeForFile, fileLabel }=require('./drop-images');
 const { closestStandardAspect, closestStandardImageSize }=require('./modules/geometry');
 const LOCAL_EDIT_EDGE_FEATHER={enabled:true,bias:-1,relative:0.015,minRadius:1,maxRadius:3};
 let queue=null, pageName='edit', selectedJobId=null, historyOpen=false, clearHistoryArmed=false;
@@ -327,78 +328,57 @@ async function readSelection(aspectOverride, preserveCurrent = false) {
   status(capture.aspectRatioMatched?'已读取选区。参考图按最近模型比例补入上下文，回填仍由原套索蒙版限制。':'画布空间不足以使用所选模型比例，将按原选区范围生成。');
   syncInputs();
 }
-async function addFiles(files) {
+async function addFiles(files, replaceIndex=null) {
   const incoming=Array.from(files||[]);
   if(!incoming.length)return;
-  if(references.length+incoming.length>5)throw new Error('最多添加5张参考图。');
+  const replacing=Number.isInteger(replaceIndex)&&replaceIndex>=0&&replaceIndex<references.length;
+  if(references.length-(replacing?1:0)+incoming.length>5)throw new Error('最多添加5张参考图。');
   const added=[];
   for(const file of incoming){
-    const ext=String(file.name||'').split('.').pop().toLowerCase();
-    if(!['png','jpg','jpeg','webp'].includes(ext))throw new Error('请添加 PNG、JPG 或 WebP 图片。');
-    if(file.size>10*1024*1024)throw new Error('每张参考图请控制在10MB以内。');
-    let buffer=typeof file.read==='function'?await file.read({format:storage.formats.binary}):typeof file.arrayBuffer==='function'?await file.arrayBuffer():null;
-    if(!buffer&&typeof FileReader!=='undefined')buffer=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('拖入的图片读取失败。'));reader.readAsArrayBuffer(file);});
-    if(!buffer||!buffer.byteLength)throw new Error('拖入的图片无法读取，请尝试点击“添加图片”。');
+    const mime=mimeForFile(file);
+    if(!mime)throw new Error('请添加 PNG、JPG 或 WebP 图片。');
+    if(Number.isFinite(Number(file.size))&&Number(file.size)>10*1024*1024)throw new Error('每张参考图请控制在10MB以内。');
+    let buffer=null;
+    if(typeof file.dataUrl==='string')buffer=fileUtils.base64ToArrayBuffer(file.dataUrl.slice(file.dataUrl.indexOf(',')+1));
+    else try{buffer=typeof file.read==='function'?await file.read({format:storage.formats.binary}):typeof file.arrayBuffer==='function'?await file.arrayBuffer():null;}catch(_){buffer=null;}
+    if(!buffer&&typeof FileReader!=='undefined'){try{buffer=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error(WECHAT_DROP_HINT));reader.readAsArrayBuffer(file);});}catch(_){buffer=null;}}
+    if(!buffer||!buffer.byteLength)throw new Error(WECHAT_DROP_HINT);
     if(buffer.byteLength>10*1024*1024)throw new Error('每张参考图请控制在10MB以内。');
-    added.push({name:file.name,data:'data:image/'+(ext==='jpg'?'jpeg':ext)+';base64,'+fileUtils.arrayBufferToBase64(buffer)});
+    added.push({name:fileLabel(file),data:'data:'+mime+';base64,'+fileUtils.arrayBufferToBase64(buffer)});
   }
-  references.push(...added);
+  if(replacing)references.splice(replaceIndex,1,...added);else references.push(...added);
   syncInputs();
-  status('已添加 '+references.length+' 张参考图，可在提示词中用图片编号引用。');
+  status(replacing?'已更新参考图。':'已添加 '+references.length+' 张参考图，可在提示词中用图片编号引用。');
 }
-async function addDroppedImages(transfer){
-  if(!transfer)throw new Error('没有收到拖入的图片，请点击“添加图片”。');
-  const entries=Array.from(transfer.uxpEntries||[]).filter(entry=>!entry.isFolder);
-  const files=entries.length?entries:Array.from(transfer.files||[]);
-  if(!files.length&&transfer.items){
-    for(const item of Array.from(transfer.items)){
-      const file=typeof item.getAsFile==='function'?item.getAsFile():null;
-      if(file)files.push(file);
-    }
+function readHelperClipboardSafely(){
+  return new Promise(resolve=>{
+    let settled=false;
+    const finish=value=>{if(settled)return;settled=true;clearTimeout(timer);resolve(value||null);};
+    const timer=setTimeout(()=>finish(null),800);
+    let helper=null;
+    try{helper=require('./modules/helper');}catch(_){finish(null);return;}
+    Promise.resolve().then(()=>helper.readClipboard()).then(finish).catch(()=>finish(null));
+  });
+}
+function readDroppedLocalFile(uri){
+  if(typeof fs.getEntryWithUrl!=='function')return Promise.resolve(null);
+  return fs.getEntryWithUrl(uri);
+}
+function referenceReplaceIndex(event){
+  let node=event&&event.target;
+  while(node){
+    if(node.id==='preview-box'||node.id==='preview'||node.id==='selection-size'||node.id==='annotate-source')return null;
+    if(typeof node.referenceIndex==='number')return node.referenceIndex;
+    node=node.parentNode;
   }
-  if(files.length){await addFiles(files);return;}
-  let text='';
-  if(typeof transfer.getData==='function'){
-    try{text=transfer.getData('text/uri-list')||transfer.getData('text/plain')||'';}catch(_){}
-  }
-  const uri=String(text).split(/\r?\n/).find(line=>line&&!line.startsWith('#'))||'';
-  const image=uri.match(/^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/i);
-  if(image){
-    if(references.length>=5)throw new Error('最多添加5张参考图。');
-    const buffer=fileUtils.base64ToArrayBuffer(image[2]);
-    if(buffer.byteLength>10*1024*1024)throw new Error('每张参考图请控制在10MB以内。');
-    const ext=image[1].toLowerCase()==='jpeg'?'jpg':image[1].toLowerCase();
-    references.push({name:'拖入图片.'+ext,data:uri});syncInputs();status('已添加 '+references.length+' 张参考图。');return;
-  }
-  if(/^file:\/\//i.test(uri)&&typeof fs.getEntryWithUrl==='function'){
-    await addFiles([await fs.getEntryWithUrl(uri)]);return;
-  }
-  throw new Error('当前 Photoshop 未提供可读取的图片；请从文件管理器拖入 PNG/JPG/WebP，或点击“添加图片”。');
+  return null;
+}
+async function addDroppedImages(transfer,replaceIndex=null){
+  const collected=await collectDroppedImages(transfer,{readLocalFile:readDroppedLocalFile});
+  if(!collected.images.length)throw new Error(collected.notice||WECHAT_DROP_HINT);
+  await addFiles(collected.images,replaceIndex);
 }
 function settingsPage(open){settingsOpen=open;navigatePage(open?'settings':'edit');}
-async function openDropWindow(){
-  if(busy)return;
-  try{
-    const {id}=await voice.request('/drop/open','POST');
-    const jobId=selectedJobId,expires=Date.now()+180000;
-    status('拖入窗口已打开；将图片拖到该窗口，参考图会自动出现在这里。');
-    const poll=async()=>{
-      if(Date.now()>expires||selectedJobId!==jobId)return;
-      try{
-        const result=await voice.request('/drop/poll?id='+encodeURIComponent(id));
-        const incoming=result.references||[];
-        if(incoming.length){
-          if(incoming.length+references.length>5)throw new Error('最多添加5张参考图。');
-          for(const ref of incoming)if(typeof ref.data!=='string'||ref.data.length>14*1024*1024||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(ref.data))throw new Error('拖入图片格式或大小无效。');
-          references.push(...incoming.map(ref=>({name:String(ref.name||'拖入图片').slice(0,150),data:ref.data})));
-          syncInputs();status('已添加 '+incoming.length+' 张拖入图片。');
-        }
-      }catch(error){status(error.message||'拖入图片失败。',true);return;}
-      setTimeout(poll,700);
-    };
-    poll();
-  }catch(error){status(error.message||'无法打开拖入窗口。',true);}
-}
 
 async function init() {
   if (initialized) return; initialized = true;
@@ -436,7 +416,7 @@ async function init() {
   queue.jobs.forEach((j,i)=>{j.number ||= queue.jobs.length-i;j.title ||= '局部改图 '+j.number;});
   queue.tick();settingsPage(false);const reloadJobId=localStorage.getItem('lk888-reload-job-id');localStorage.removeItem('lk888-reload-job-id');if(queue.jobs.length)await openHistory(queue.jobs.find(j=>j.id===reloadJobId)?.id||queue.jobs[0].id);
   $('settings-toggle').addEventListener('click', () => settingsPage(!settingsOpen));
-  promptEditor=new PromptEditor({node:$('prompt'),voiceButton:$('voice-prompt'),expandButton:$('expand-prompt'),container:$('prompt').parentElement,clipboard:typeof navigator!=='undefined'?navigator.clipboard:null,context:()=>selectedJobId,onChange:value=>localStorage.setItem('lk888-prompt',value),onNotice:(message,error)=>{const note=$('input-notice');note.textContent=message;note.className=error?'error':'';},onVoice:kind=>{if(kind==='stop')voice.stop();else voice.start();},readImageClipboard:()=>voice.request('/clipboard'),onImage:async data=>{if(references.length>=5)throw new Error('最多添加5张参考图。');const match=typeof data==='string'&&data.match(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i);if(!match||data.length>14*1024*1024)throw new Error('截图格式或大小无效。');references.push({name:'截图.'+(match[1].toLowerCase()==='jpeg'?'jpg':match[1].toLowerCase()),data});syncInputs();}});
+  promptEditor=new PromptEditor({node:$('prompt'),voiceButton:$('voice-prompt'),expandButton:$('expand-prompt'),container:$('prompt').parentElement,clipboard:typeof navigator!=='undefined'?navigator.clipboard:null,context:()=>selectedJobId,onChange:value=>localStorage.setItem('lk888-prompt',value),onNotice:(message,error)=>{const note=$('input-notice');note.textContent=message;note.className=error?'error':'';},onVoice:kind=>{if(kind==='stop')voice.stop();else voice.start();},readImageClipboard:()=>voice.request('/clipboard'),readHelperClipboard:readHelperClipboardSafely,onImage:async data=>{if(references.length>=5)throw new Error('最多添加5张参考图。');const match=typeof data==='string'&&data.match(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i);if(!match||data.length>14*1024*1024)throw new Error('截图格式或大小无效。');references.push({name:'截图.'+(match[1].toLowerCase()==='jpeg'?'jpg':match[1].toLowerCase()),data});syncInputs();}});
   promptEditor.resize();
   console.log('Native prompt editor ready; clipboard access: '+(typeof navigator!=='undefined' && !!navigator.clipboard));
   $('restore-result').addEventListener('click',()=>{if(job && !job.imported && !job.source){status('先处理当前任务。',true);return;}const saved=localStorage.getItem('lk888-last-result');if(!saved){status('暂无上次结果。');return;}job=JSON.parse(saved);capture=null;sourceImage=null;saveJob();refresh();status('已恢复上次结果，可点击保存结果。');});
@@ -466,26 +446,36 @@ async function init() {
   });
   $('add-reference').addEventListener('click',()=>withBusy(async()=>{const files=await fs.getFileForOpening({types:['png','jpg','jpeg','webp'],allowMultiple:true});if(files)await addFiles(Array.isArray(files)?files:[files]);}));
   $('paste-reference').addEventListener('click',()=>promptEditor.pasteImage());
-  $('open-drop-window').addEventListener('click',openDropWindow);
   $('annotate-source').addEventListener('click',()=>openAnnotation(null));
   $('annotate-source').addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openAnnotation(null);}});
   $('preview').addEventListener('click',()=>openAnnotation(null));
   $('clear-reference').addEventListener('click',()=>{references=[];referenceDrag=null;syncInputs();});
   document.addEventListener('mousemove',moveReferenceOnPointer);
   document.addEventListener('mouseup',endReferencePointer);
-  const imageRow=$('images-row'),dropzone=$('dropzone');
-  const dragEnter=event=>{event.preventDefault();dropzone.classList.add('dragging');};
+  const imageRow=$('images-row'),dropzone=$('dropzone'),dropCatcher=$('drop-catcher');
+  let dragDepth=0,suppressDropClick=false;
+  const dragEnter=event=>{event.preventDefault();dragDepth++;dropzone.classList.add('dragging');};
   const dragOver=event=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='copy';dropzone.classList.add('dragging');};
-  const handleImageDrop=event=>{event.preventDefault();event.stopPropagation?.();dropzone.classList.remove('dragging');return withBusy(()=>addDroppedImages(event.dataTransfer));};
+  const handleImageDrop=event=>{
+    if(event.__psLocalHandled)return;
+    event.__psLocalHandled=true;
+    event.preventDefault();
+    const transfer=event.dataTransfer,replaceIndex=referenceReplaceIndex(event),target=event.target;
+    dragDepth=0;dropzone.classList.remove('dragging');
+    suppressDropClick=true;setTimeout(()=>{suppressDropClick=false;},400);
+    return withBusy(()=>addDroppedImages(transfer,replaceIndex).catch(error=>{if(target===$('prompt')&&/另存|粘贴/.test(error.message||''))return;throw error;}));
+  };
   document.addEventListener('dragenter',dragEnter,true);
   document.addEventListener('dragover',dragOver,true);
-  document.addEventListener('dragleave',event=>{if(!document.contains?.(event.relatedTarget))dropzone.classList.remove('dragging');},true);
-  document.addEventListener('drop',handleImageDrop,true);
+  document.addEventListener('dragleave',event=>{dragDepth=Math.max(0,dragDepth-1);if(dragDepth===0||!document.contains?.(event.relatedTarget))dropzone.classList.remove('dragging');},true);
+  document.addEventListener('drop',handleImageDrop);
   imageRow.addEventListener('dragenter',dragEnter);
   imageRow.addEventListener('dragover',dragOver);
   imageRow.addEventListener('drop',handleImageDrop);
   dropzone.addEventListener('drop',handleImageDrop);
-  document.addEventListener('paste',event=>{if(event.target===$('prompt'))return;const image=promptEditor.clipboardImage(event);if(!image)return;event.preventDefault();event.stopPropagation();promptEditor.addClipboardImage(image,selectedJobId).catch(error=>status(error.message,true));},true);
+  if(dropCatcher){dropCatcher.addEventListener('dragenter',dragEnter);dropCatcher.addEventListener('dragover',dragOver);dropCatcher.addEventListener('drop',handleImageDrop);}
+  dropzone.addEventListener('click',event=>{if(!suppressDropClick)return;event.preventDefault();event.stopPropagation();},true);
+  document.addEventListener('paste',event=>{if(event.target===$('prompt'))return;const image=promptEditor.clipboardImage(event);if(image){event.preventDefault();event.stopPropagation();promptEditor.addClipboardImage(image,selectedJobId).catch(error=>status(error.message,true));return;}if(!event.clipboardData)return;event.preventDefault();promptEditor.pasteImage().catch(error=>status(error.message,true));},true);
   if(action && action.addNotificationListener) action.addNotificationListener(['set','select','deselect'],()=>{
     if(busy)return;
     try { if(app.activeDocument && app.activeDocument.selection.bounds){show('selection-gate',true);$('selection-hint').textContent='检测到选区，是否进行局部改图？';} }catch(_){}

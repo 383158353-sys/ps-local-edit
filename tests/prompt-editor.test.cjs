@@ -73,6 +73,28 @@ test('context-menu paste inserts text once without a separate paste button',asyn
   assert.equal(event.prevented,true);assert.equal(h.input.value,'红色白色花瓶');assert.equal(h.changes.length,1);
 });
 
+test('copied image file with an empty MIME type does not ask the helper',async()=>{
+  let helperCalls=0;
+  const h=fixture({readHelperClipboard:async()=>{helperCalls++;return null;},readImageClipboard:async()=>({text:'不要插入'})});
+  const file={name:'shot.png',type:'',size:1,arrayBuffer:async()=>Uint8Array.from([65]).buffer};
+  h.input.events.paste(pasteEvent({files:[file],items:[]}));
+  await flush();
+  assert.equal(helperCalls,0);
+  assert.equal(h.images[0],'data:image/png;base64,QQ==');
+  assert.equal(h.input.value,'红色花瓶');
+});
+test('paste image uses the helper only after clipboard files are empty',async()=>{
+  const h=fixture({clipboard:{getContent:async()=>({})},readImageClipboard:async()=>({}),readHelperClipboard:async()=>({success:true,image:'data:image/png;base64,QQ=='})});
+  await h.editor.pasteImage();
+  assert.deepEqual(h.images,['data:image/png;base64,QQ==']);
+  assert.equal(h.input.value,'红色花瓶');
+});
+test('a stopped helper does not block paste',async()=>{
+  const h=fixture({clipboard:{getContent:async()=>({})},readImageClipboard:async()=>{throw new Error('本机截图粘贴服务未连接。');},readHelperClipboard:async()=>{throw new Error('ECONNREFUSED');}});
+  await h.editor.pasteImage();
+  assert.equal(h.images.length,0);
+  assert.match(h.notices.at(-1)[0],/未连接|没有图片/);
+});
 test('expand button reveals the full editable prompt and Escape collapses it without changing text',()=>{
   const h=fixture();const original=h.input.value;
   h.expand.events.click();

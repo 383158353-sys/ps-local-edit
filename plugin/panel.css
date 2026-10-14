@@ -57,7 +57,11 @@ html,body { max-width:100%; overflow-x:hidden; }
 .task-preview img { flex:1; width:100%; min-height:0; object-fit:contain; }
 .task-preview .task-actions { display:flex; justify-content:space-between; gap:8px; }
 .dropzone { gap:2px; }
-.dropzone sp-action-button { min-width:0; font-size:11px; height:23px; }
+.dropzone sp-action-button, .dropzone button { min-width:0; width:100%; font-size:11px; height:23px; padding:0 2px; color:#f2f2f2; background:transparent; border:0; cursor:pointer; }
+.dropzone button:disabled { opacity:.5; cursor:default; }
+.dropzone .drop-hint { color:#ccc; font-size:10px; line-height:14px; pointer-events:none; }
+.drop-catcher { display:none; position:absolute; inset:0; z-index:4; }
+.dropzone.dragging .drop-catcher { display:block; }
 
 .thumb .annotate-reference { position:absolute; right:3px; bottom:23px; z-index:3; display:flex; align-items:center; justify-content:center; width:24px; min-width:24px; height:24px; padding:0; color:#fff; background:#303030; border:1px solid #888; border-radius:4px; font:18px/1 "Segoe UI Symbol",sans-serif; cursor:pointer; }
 .thumb .annotate-reference:hover { background:#176fd1; }

@@ -30,6 +30,7 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
     if (name === 'photoshop') return { app, imaging: { encodeImageData: async () => 'YWJj' }, constants: { DocumentMode: { RGB: 'RGB' } } };
     if (name === 'uxp') return { storage };
     if (name === './modules/ps') return ps;if(name==='./modules/geometry')return require('../plugin/modules/geometry');
+    if(name==='./drop-images')return require('../plugin/drop-images');
     if(name==='./prompt-editor')return require('../plugin/prompt-editor');if(name==='./voice'){const Base=require('../plugin/voice').VoiceController;return {VoiceController:class extends Base{constructor(options){super({...options,fetchImpl:fetch});}}};}if(name==='./task-queue')return {TaskQueue};if(name==='./png')return {pngRGBA};
     if (name === './modules/fs') return { arrayBufferToBase64:v=>Buffer.from(v).toString('base64'), base64ToArrayBuffer: v => {imageDecodes++;return Uint8Array.from(Buffer.from(v, 'base64')).buffer;} };
     if (name === './api') return { ...api, MediaClient: Client };
@@ -84,6 +85,40 @@ test('invalid mixed file drop does not leave a partial reference list',async()=>
  ]}});
  assert.equal(h.nodes['reference-thumbs'].children.length,0);
  assert.match(h.nodes.status.textContent,/PNG、JPG 或 WebP/);
+});
+test('items-only drop adds a reference and an empty drop explains WeChat save or paste',async()=>{
+ const h=harness();await h.ready();
+ await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[],items:[{kind:'file',getAsFile:()=>({name:'项目.jpg',type:'',size:2,arrayBuffer:async()=>Uint8Array.from([7,8]).buffer})}]}});
+ assert.equal(h.nodes['reference-thumbs'].children.length,1);
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[0].textContent,'2');
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'项目.jpg');
+ await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[],items:[],uxpEntries:[]}});
+ assert.equal(h.nodes['reference-thumbs'].children.length,1);
+ assert.match(h.nodes.status.textContent,/另存/);
+ assert.match(h.nodes.status.textContent,/粘贴/);
+});
+test('a sixth reference is refused and the first five stay',async()=>{
+ const h=harness();await h.ready();
+ const files=[];
+ for(let i=0;i<5;i++)files.push({name:'图'+i+'.png',type:'image/png',size:1,arrayBuffer:async()=>Uint8Array.from([i+1]).buffer});
+ await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files}});
+ assert.equal(h.nodes['reference-thumbs'].children.length,5);
+ await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[{name:'第六张.png',type:'image/png',size:1,arrayBuffer:async()=>Uint8Array.from([6]).buffer}]}});
+ assert.equal(h.nodes['reference-thumbs'].children.length,5);
+ assert.match(h.nodes.status.textContent,/最多添加5张/);
+});
+test('dropping on the selection or the empty zone does not replace the base image',async()=>{
+ const h=harness();await h.ready();await h.nodes['capture-selection'].click();
+ const src=h.nodes.preview.src;
+ await h.nodes['images-row'].drop({preventDefault(){},target:h.nodes.preview,dataTransfer:{files:[{name:'extra.png',type:'',size:1,arrayBuffer:async()=>Uint8Array.from([9]).buffer}]}});
+ assert.equal(h.nodes.preview.src,src);
+ assert.equal(h.nodes['reference-thumbs'].children.length,1);
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[0].textContent,'2');
+ const first=h.nodes['reference-thumbs'].children[0];
+ await h.nodes['images-row'].drop({preventDefault(){},target:first,dataTransfer:{files:[{name:'替换.webp',type:'image/webp',size:1,arrayBuffer:async()=>Uint8Array.from([4]).buffer}]}});
+ assert.equal(h.nodes.preview.src,src);
+ assert.equal(h.nodes['reference-thumbs'].children.length,1);
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'替换.webp');
 });
 test('generation releases editor and never auto imports results',async()=>{const h=harness();await h.ready();await h.nodes.generate.click();await h.ready();assert.equal(h.requests.length,1);assert.equal(h.calls.length,0);assert.equal(h.nodes.generate.disabled,false);assert.ok(JSON.parse(h.local.get('lk888-jobs'))[0].tasks[0].results.length);});
 test('reload button saves the current editor and reloads without resubmitting',async()=>{const h=harness();await h.ready();await h.nodes['tab-edit'].click();h.nodes.prompt.value='保留这个提示词';await h.nodes['reload-panel'].click();assert.equal(h.reloads,1);assert.equal(JSON.parse(h.local.get('lk888-jobs'))[0].prompt,'保留这个提示词');assert.equal(h.local.get('lk888-reload-job-id'),JSON.parse(h.local.get('lk888-jobs'))[0].id);assert.equal(h.requests.length,0);});
