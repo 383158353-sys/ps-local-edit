@@ -102,7 +102,7 @@ test('model quality aspect and four tasks are preserved',async()=>{const h=harne
 
 function findNode(root,predicate){if(predicate(root))return root;for(const child of root.children||[]){const match=findNode(child,predicate);if(match)return match;}return null;}
 function findNodes(root,predicate){return [...(predicate(root)?[root]:[]),...(root.children||[]).flatMap(child=>findNodes(child,predicate))];}
-function button(root,label){const found=findNode(root,node=>node.id==='button'&&((node.textContent||'').includes(label)||(node.title||'').includes(label)||(node.attributes?.['aria-label']||'').includes(label)));assert.ok(found,`Missing button: ${label}`);return found;}
+function button(root,label){const found=findNode(root,node=>(node.id==='button'||node.attributes?.role==='button')&&((node.textContent||'').includes(label)||(node.title||'').includes(label)||(node.attributes?.['aria-label']||'').includes(label)));assert.ok(found,`Missing button: ${label}`);return found;}
 
 test('completed result stays visible as a card with an add-layer button after reopening history',async()=>{
  const h=harness();await h.ready();await h.nodes.generate.click();await h.ready();

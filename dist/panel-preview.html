@@ -3656,9 +3656,11 @@ function renderTasks(){
    img.onclick=()=>withBusy(()=>candidateAction({...action,type:'import'}));
    caption.onclick=img.onclick;
    const buttons=document.createElement('div');buttons.className='task-actions';
-   const add=document.createElement('button');add.textContent=result.imported?'再次添加':'添加图层';add.title=result.imported?'再次添加图层':'添加图层';add.setAttribute('aria-label',add.title);add.onclick=img.onclick;
-   const zoom=document.createElement('button');zoom.textContent='⤢';zoom.title='放大预览';zoom.setAttribute('aria-label',zoom.title);zoom.onclick=()=>openTaskPreview(result,action);
-   const save=document.createElement('button');save.textContent='⇩';save.title='保存原图';save.setAttribute('aria-label',save.title);save.onclick=()=>withBusy(()=>candidateAction({...action,type:'save'}));
+   // Ordinary DOM controls avoid Photoshop's native button skin and minimum width.
+   const resultButton=(text,title,callback,primary=false)=>{const node=document.createElement('div');node.className='result-action'+(primary?' result-action-primary':'');node.textContent=text;node.title=title;node.setAttribute('role','button');node.setAttribute('tabindex','0');node.setAttribute('aria-label',title);node.onclick=callback;node.addEventListener('keydown',event=>{if(event.target===node&&event.key==='Enter'&&!event.repeat&&!event.altKey&&!event.ctrlKey&&!event.metaKey){event.preventDefault();event.stopPropagation();callback();}});return node;};
+   const add=resultButton(result.imported?'再次添加':'添加图层',result.imported?'再次添加图层':'添加图层',img.onclick,true);
+   const zoom=resultButton('⤢','放大预览',()=>openTaskPreview(result,action));
+   const save=resultButton('⇩','保存原图',()=>withBusy(()=>candidateAction({...action,type:'save'})));
    card.appendChild(img);card.appendChild(buttons);card.appendChild(caption);buttons.appendChild(add);buttons.appendChild(zoom);buttons.appendChild(save);
   });
  });

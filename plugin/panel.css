@@ -92,15 +92,16 @@ input::placeholder,textarea::placeholder { color:#8c939d; }
 #task-content { max-height:180px; overflow-y:auto; overflow-x:hidden; }
 #tab-tasks { color:#a8c9f7; font-size:11px; }
 .task-message { color:var(--muted); font-size:11px; line-height:18px; margin:4px 0 6px; }
-.task-result { display:inline-block; position:relative; vertical-align:top; width:48%; min-width:104px; padding:5px; margin:0 2% 8px 0; border:1px solid var(--line); border-radius:7px; background:var(--surface); }
+.task-result { display:inline-block; position:relative; vertical-align:top; width:48%; min-width:132px; padding:5px; margin:0 2% 8px 0; border:1px solid var(--line); border-radius:7px; background:var(--surface); }
 .task-result img { display:block; width:100%; height:76px; border-radius:4px; object-fit:contain; background:#202123; cursor:pointer; }
 .task-caption { display:block; color:var(--muted); font-size:10px; margin-top:5px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; cursor:pointer; }
 .task-badge { position:absolute; z-index:2; top:8px; left:8px; color:#fff; background:#26282c; border-radius:3px; padding:2px 4px; font-size:10px; }
 .task-actions { display:flex; align-items:center; margin-top:6px; }
-.task-result .task-actions button { appearance:none; -webkit-appearance:none; height:25px; min-width:24px; padding:0 4px; border:1px solid #525860; border-radius:4px; color:#d5dbe5; background:#30343a; cursor:pointer; margin-right:4px; font-size:12px; }
-.task-result .task-actions button:first-child { flex:1; color:#88b7ff; border-color:#4876b6; font-size:10px; white-space:nowrap; }
-.task-result .task-actions button:last-child { margin-right:0; }
-.task-result .task-actions button:hover { background:#3b495d; }
+.result-action { display:flex; flex:0 0 24px; align-items:center; justify-content:center; height:25px; min-width:24px; padding:0 4px; border:1px solid #525860; border-radius:4px; color:#d5dbe5; background:#30343a; cursor:pointer; margin-right:4px; font-size:12px; line-height:16px; white-space:nowrap; }
+.result-action-primary { flex:1 1 auto; min-width:50px; color:#88b7ff; border-color:#4876b6; font-size:10px; }
+.result-action:last-child { margin-right:0; }
+.result-action:hover { background:#3b495d; }
+.result-action:focus { border-color:var(--accent); outline:none; }
 .result-footnote { color:#8e959f; font-size:10px; line-height:16px; margin-top:4px; }
 .task-history { display:flex; flex-direction:column; margin-bottom:12px; padding:8px; background:var(--surface); border:1px solid var(--line); border-radius:6px; }
 .task-history > div { display:flex; margin-bottom:5px; }
