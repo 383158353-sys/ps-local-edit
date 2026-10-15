@@ -1,5 +1,8 @@
 # Photoshop 局部 AI 改图插件
 
+
+> **另一台电脑安装**：见 [INSTALL-其他电脑.md](INSTALL-其他电脑.md)。也可直接装影词魔方桌面包（会带上本插件）：https://github.com/383158353-sys/cine-prompt/releases
+
 Photoshop 内的简洁 UXP 面板，通过 https://api.lk888.ai 调用生图模型，使用 PS 原生选区完成局部修改。
 
 ## 功能
