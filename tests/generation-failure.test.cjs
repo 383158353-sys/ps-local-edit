@@ -25,3 +25,17 @@ test('final failure remains failure even if it contains a result URL',async()=>{
  const queue=new TaskQueue({jobs:[job],persist(){},onChange(){},client:async()=>({status:async()=>({data:{state:'failed',is_final:true,error:{message:'PROHIBITED_CONTENT'},result_url:'https://cdn.example/input.png'}})})});
  await queue.tick();assert.equal(job.state,'failed');assert.match(job.tasks[0].error,/PROHIBITED_CONTENT/);assert.deepEqual(job.tasks[0].results,[]);
 });
+
+
+test('nested submission rejection preserves the provider reason',async()=>{
+ const api=new MediaClient('test-key',async()=>({ok:true,status:200,json:async()=>({data:{error:{code:'PROHIBITED_CONTENT',message:'blocked'}}})}));
+ await assert.rejects(api.submit('banana-2','edit',[]),error=>error.terminal===true&&/PROHIBITED_CONTENT/.test(error.message));
+});
+
+test('string false final flag keeps polling the existing task',async()=>{
+ for(const flag of ['false','0',false,0]){
+  let calls=0;const task={id:'existing',state:'running',results:[]},job={state:'running',tasks:[task]};
+  const queue=new TaskQueue({jobs:[job],persist(){},onChange(){},client:async()=>({status:async()=>{calls++;return {data:{state:'processing',is_final:flag}};}})});
+  await queue.tick();await queue.tick();assert.equal(calls,2);assert.equal(task.state,'running');assert.equal(job.state,'running');
+ }
+});

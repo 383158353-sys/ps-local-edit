@@ -9,7 +9,7 @@ class TaskQueue{
   const state=String(data.state||data.status||response.state||response.status||'').toLowerCase();
   const images=imageSources(response),failed=['failed','failure','error','cancelled','canceled'].includes(state)||!!(data.error||response.error);
   const succeeded=['success','succeeded','completed','complete','done','finished'].includes(state);
-  const final=!!(data.is_final||response.is_final||data.isFinal||response.isFinal||succeeded||failed);
+  const final=[data.is_final,response.is_final,data.isFinal,response.isFinal].some(value=>value===true||value===1||value==='true'||value==='1')||succeeded||failed;
   task.progress=data.progress??response.progress;task.updatedAt=Date.now();task.error=null;
   if(failed){task.state='failed';task.results=[];task.error=providerError(data.error?data:response,200);}
   else if(images.length){task.state='ready';task.results=images.map(source=>({source,imported:false}));}

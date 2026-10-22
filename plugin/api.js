@@ -54,7 +54,8 @@ class MediaClient {
       });
       let payload;
       try { payload = await response.json(); } catch (_) { throw new Error('平台返回了无法识别的响应。'); }
-      if (!response.ok || payload.error) {
+      if (!response.ok || payload?.error || unwrap(payload)?.error) {
+        payload = unwrap(payload)?.error ? unwrap(payload) : payload;
         const error = payload.error;
         if (response.status === 502) throw new Error('LK888 上游模型返回 502，模型暂不可用或平台请求超时。请稍后重试，并先在 LK888 确认任务状态，避免重复提交。'+(error?.message?' 原因：'+error.message:''));
         const failure=new Error(providerError(payload,response.status));
