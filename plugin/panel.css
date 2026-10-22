@@ -72,3 +72,45 @@ html,body { max-width:100%; overflow-x:hidden; }
 
 .thumb .annotate-reference { position:absolute; right:3px; bottom:23px; z-index:3; display:flex; align-items:center; justify-content:center; width:24px; min-width:24px; height:24px; padding:0; color:#fff; background:#303030; border:1px solid #888; border-radius:4px; font:18px/1 "Segoe UI Symbol",sans-serif; cursor:pointer; }
 .thumb .annotate-reference:hover { background:#176fd1; }
+/* Full-width model management, compatible with narrow UXP panels. */
+#saved-models {display:block;width:100%;margin:8px 0 16px;}
+.model-entry {display:block;padding:12px 0;border-bottom:1px solid #606060;width:100%;}
+.model-entry strong {display:block;font-size:13px;line-height:20px;color:#f1f1f1;}
+.model-id {display:block;font-size:12px;line-height:18px;color:#d0d0d0;overflow-wrap:anywhere;word-break:break-all;user-select:text;margin-top:3px;}
+.model-check {font-size:12px;line-height:18px;color:#d0d0d0;margin:6px 0;}
+.model-check.available {color:#a6e3b7;}
+.model-check.unavailable {color:#ffb7a5;}
+.model-actions {display:flex;flex-wrap:wrap;margin-top:6px;}
+#saved-models .model-actions button,#restore-models {min-height:28px;padding:4px 9px;margin-right:6px;color:#eee;background:#383838;border:1px solid #777;border-radius:4px;white-space:nowrap;}
+#saved-models .model-actions button:disabled {opacity:.6;}
+#saved-models .model-actions button:focus,#restore-models:focus {border-color:#80baff;}
+.model-summary {color:#eee;font-size:13px;line-height:22px;margin:8px 0;}
+.model-visibility {color:#b5d5ff;font-size:12px;line-height:20px;margin-top:5px;}
+#saved-models input {width:100%;height:32px;margin:4px 0 8px;}
+#saved-models .model-entry {padding:10px 0;}
+#saved-models .model-actions {gap:4px;}
+#settings {max-width:760px;}
+#saved-models .model-head {display:flex;align-items:center;gap:6px;cursor:pointer;}
+#saved-models .model-head input {width:auto;height:auto;margin:0;}
+#saved-models .model-entry.failed strong {color:#ff8f7a;}
+#saved-models .model-entry.failed {border-left:3px solid #e0533d;padding-left:6px;}
+/* settings scroll + compact model manager */
+html,body{height:100%;}
+#settings{max-width:760px;max-height:calc(100vh - 110px);overflow-y:auto;overflow-x:hidden;padding-right:4px;}
+#settings .saved-models,#saved-models{display:block;overflow:visible;margin:4px 0 8px;}
+.mm-head span{display:flex;gap:4px;}
+.mm-status{margin:2px 0 6px;} .mm-status.error{color:#ffb7a5;}
+.mm-bar{display:flex;align-items:center;gap:4px;margin-bottom:4px;}
+#saved-models .mm-search{flex:1;min-width:0;height:26px;margin:0;padding:3px 6px;}
+.mm-small{height:24px;padding:0 6px;font-size:11px;color:#ddd;background:#383838;border:1px solid #666;border-radius:3px;}
+.mm-row{display:flex;align-items:center;gap:6px;padding:3px 2px;border-bottom:1px solid #444;min-height:26px;}
+.mm-row.failed{background:rgba(224,83,61,.15);}
+#saved-models .mm-cb{width:auto;height:auto;margin:0;flex:0 0 auto;}
+.mm-name{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;}
+.mm-title{font-size:12px;color:#eee;margin-right:5px;} .mm-row.failed .mm-title{color:#ff8f7a;}
+.mm-id{font-size:10px;color:#8c8c8c;}
+.mm-dot{flex:0 0 22px;width:22px;height:20px;padding:0;font-size:12px;border:1px solid #555;border-radius:3px;background:#333;color:#aaa;}
+.mm-dot.ok{color:#7fe09a;} .mm-dot.bad{color:#ff7a66;border-color:#a33;cursor:pointer;} .mm-dot.todo{color:#ddd;cursor:pointer;} .mm-dot.off{opacity:.3;}
+.mm-arrow{flex:0 0 20px;width:20px;height:20px;padding:0;font-size:11px;color:#ddd;background:#383838;border:1px solid #666;border-radius:3px;}
+.mm-add{margin:6px 0;font-size:11px;color:#aaa;} .mm-add summary{cursor:pointer;}
+.mm-misc{margin-top:10px;border-top:1px solid #444;padding-top:6px;}

@@ -4,9 +4,10 @@
 <section id="settings" style="display:none">
 <div class="row"><strong>连接设置</strong><sp-action-button id="back-editor" quiet>返回改图</sp-action-button></div>
 <label>LK888 API Key</label><input id="api-key" type="password" placeholder="粘贴密钥，点击保存；已保存可留空" autocomplete="off"><p id="key-state" class="hint">正在检查本机密钥…</p>
-<div class="row"><sp-action-button id="save-key">保存密钥</sp-action-button><sp-action-button id="test-key">检查连接</sp-action-button></div><p class="hint">https://api.lk888.ai</p>
-<label>添加图像模型</label><div class="settings-inline"><input id="custom-model" placeholder="粘贴模型 ID，例如 banana-2"><sp-action-button id="add-model">添加并选中</sp-action-button></div><div id="saved-models" class="saved-models"></div>
-<label>模型列表</label><sp-action-button id="refresh-models">读取平台图像模型</sp-action-button><p id="models-status" class="hint">可手动添加 LK888 提供的图像模型 ID，随后在主面板直接选择。</p><sp-checkbox id="reset-confirm">已在平台确认旧任务，可以结束记录</sp-checkbox><sp-action-button id="restore-result">上次结果</sp-action-button><sp-action-button id="reset-job">结束当前任务记录</sp-action-button></section>
+<div class="row"><sp-action-button id="save-key">保存密钥</sp-action-button></div>
+<div class="row mm-head"><strong>图像模型</strong><span><sp-action-button id="test-key">检查连接</sp-action-button><sp-action-button id="test-models">测试已勾选</sp-action-button></span></div><p id="models-status" class="hint mm-status">勾选要用的模型 → 测试 → 通过的进主面板下拉</p><div id="saved-models" class="saved-models"></div>
+<div class="mm-add"><button id="mm-add-toggle" type="button" class="mm-small">+ 手动添加</button><div id="mm-add-box" class="settings-inline" style="display:none"><input id="custom-model" placeholder="模型 ID"><sp-action-button id="add-model">添加</sp-action-button></div></div>
+<div class="mm-misc"><sp-checkbox id="reset-confirm">已在平台确认旧任务，可以结束记录</sp-checkbox><sp-action-button id="restore-result">上次结果</sp-action-button><sp-action-button id="reset-job">结束当前任务记录</sp-action-button></div></section>
 <section id="editor">
 <div id="selection-gate" class="gate"><p id="selection-hint">选区是可选的：读取选区可做局部改图；也可直接上传图片或输入提示词生成。</p><sp-button id="capture-selection">局部改图 · 读取选区</sp-button></div>
 

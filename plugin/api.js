@@ -4,6 +4,7 @@
  */
 const MODELS = [
   { id: 'banana-2', label: 'Nano Banana 2' },
+  { id: 'gemini-nano-banana-2.1', label: 'Banana 2.1' },
   { id: 'banana-pro', label: 'Nano Banana Pro' },
   { id: 'tt-image-2', label: 'GPT Image 2' },
   { id: 'tt-image-2.5', label: 'GPT Image 2.5' },
@@ -45,12 +46,15 @@ class MediaClient {
   constructor(key, fetchImpl = fetch) { this.key = key; this.fetch = fetchImpl; this.base = 'https://api.lk888.ai'; }
   async request(path, body) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 60000);
+    // Uploading selection/reference PNGs and accepting a generation can exceed a minute.
+    // A timed-out submission must never be retried automatically.
+    const timer = setTimeout(() => controller.abort(), path.startsWith('/v1/media/generate') ? 300000 : 60000);
     try {
-      const response = await this.fetch(this.base + path, {
+      const localSubmission=path==='/v1/media/generate'&&this.fetch===fetch;
+      const response = await this.fetch(localSubmission?'http://127.0.0.1:17402/media/generate':this.base + path, {
         method: body ? 'POST' : 'GET', signal: controller.signal,
-        headers: { Authorization: 'Bearer ' + this.key, 'Content-Type': 'application/json' },
-        ...(body ? { body: JSON.stringify(body) } : {})
+        headers: localSubmission?{'X-PS-Local-Voice':'1','Content-Type':'application/json'}:{ Authorization: 'Bearer ' + this.key, 'Content-Type': 'application/json' },
+        ...(body ? { body: JSON.stringify(localSubmission?{key:this.key,payload:body}:body) } : {})
       });
       let payload;
       try { payload = await response.json(); } catch (_) { throw new Error('平台返回了无法识别的响应。'); }
@@ -72,6 +76,14 @@ class MediaClient {
     } finally { clearTimeout(timer); }
   }
   async submit(model, prompt, images, params = {}) {
+    if(model==='gemini-nano-banana-2.1'){
+      const available=await this.models();
+      const exact=available.find(item=>item.id===model);
+      const alternatives=available.filter(item=>/banana[\s._-]*2[._-]1(?:$|[\s._/-])/i.test(item.id));
+      if(exact)model=exact.id;
+      else if(alternatives.length===1)model=alternatives[0].id;
+      else {const error=new Error('当前平台未返回可唯一确认的 Banana 2.1 模型 ID；尚未提交生图任务。请在设置中刷新平台模型。');error.terminal=true;throw error;}
+    }
     const payload = await this.request('/v1/media/generate', { model, prompt, params: { ...params, images } });
     const taskId = unwrap(payload).task_id || payload.task_id;
     if (!taskId) throw new Error('未收到任务编号。请先到平台确认任务，避免重复计费。');
