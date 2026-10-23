@@ -1,9 +1,14 @@
-// 模型管理：候选列表(平台拉取+内置+手动) → 勾选 → 测试已勾选 → 通过的进主面板下拉（按用户顺序）。
+// 模型管理：候选列表(平台拉取+内置+手动) → 勾选 → 测试已勾选 → 主面板下拉（按用户顺序）。
+// 推荐图模默认勾选并留在下拉里；不把 LK888 全量列表灌进来。
 // localStorage: lk888-model-candidates [{id,label}] / lk888-model-selected [id,...]（即顺序，同时写 lk888-model-order）
 // / lk888-model-test-results {id:{ok,text,at}}；兼容旧 lk888-custom-models / lk888-deleted-models。
+const BANANA21_VARIANT=/(?:^|[-_/])(?:token|flare|sunburst)(?:$|[-_/])/i;
+function isPerCallBanana21(id){return typeof id==='string'&&/banana[\s._-]*2[._-]1(?:$|[\s._/-])/i.test(id)&&!BANANA21_VARIANT.test(id);}
 function resolveModel(id,items){
- const exact=items.find(m=>m.id===id);if(exact)return exact;
- if(id==='gemini-nano-banana-2.1'){const aliases=items.filter(m=>/banana[\s._-]*2[._-]1(?:$|[\s._/-])/i.test(m.id));if(aliases.length===1)return aliases[0];}
+ const exact=items.find(m=>m&&m.id===id);if(exact)return exact;
+ // banana-2.1 是按次计费的那个 ID，不能用 -token/flare/sunburst 顶替。
+ // 旧的 gemini 占位 ID 只有在平台恰好给出一个按次 ID 时才映射过去。
+ if(id==='gemini-nano-banana-2.1'){const aliases=items.filter(m=>m&&isPerCallBanana21(m.id));if(aliases.length===1)return aliases[0];}
  return null;
 }
 function shortModelName(model){
@@ -15,8 +20,16 @@ const ID_RE=/^[A-Za-z0-9][A-Za-z0-9._:/-]{1,119}$/;
 // 推荐模型（按次计费最便宜的版本），按价格从低到高
 const CURATED=[{id:'tt-image-2.5',label:'GPT 图 2.5',price:'0.0265/次'},{id:'tt-image-2',label:'GPT 图 2',price:'0.0386/次'},{id:'banana-2.1',label:'Banana 2.1',price:'0.0882/次'},{id:'banana-2',label:'Banana 2',price:'0.1176/次'},{id:'banana-pro',label:'Banana Pro',price:'0.1411/次'},{id:'doubao-seedream-5-0-pro-260628',label:'即梦 5.0 Pro',price:'0.3024/次'},{id:'gk-image-2.0',label:'Grok 图',price:'价格未知'}];
 const DEFAULT_TICKED=CURATED.map(m=>m.id);
-function readJSON(key,fallback){try{const v=JSON.parse(localStorage.getItem(key)||'null');return v==null?fallback:v;}catch(_){return fallback;}}
-function createStore(builtins){
+function placeCurated(selected,id){
+ if(selected.includes(id))return selected.slice();
+ const order=CURATED.map(model=>model.id),at=order.indexOf(id),next=selected.slice();
+ let index=next.length;
+ for(let i=0;i<next.length;i++){const pos=order.indexOf(next[i]);if(pos>at){index=i;break;}}
+ next.splice(index,0,id);return next;
+}
+function createStore(builtins,env){
+ const localStorage=(env&&env.localStorage)||globalThis.localStorage;
+ const readJSON=(key,fallback)=>{try{const v=JSON.parse(localStorage.getItem(key)||'null');return v==null?fallback:v;}catch(_){return fallback;}};
  const state={candidates:[],selected:[],results:{},deleted:new Set()};
  const stored=readJSON('lk888-model-candidates',[]);
  const manual=(Array.isArray(stored)?stored:[]).filter(m=>m&&m.manual&&ID_RE.test(m.id)&&!CURATED.some(c=>c.id===m.id));
@@ -27,6 +40,7 @@ function createStore(builtins){
  state.selected=migrated&&Array.isArray(prevSel)?prevSel.filter(id=>ids.has(id)):[...DEFAULT_TICKED,...(Array.isArray(prevSel)?prevSel:[]).filter(id=>manual.some(m=>m.id===id))];
  if(migrated&&localStorage.getItem('lk888-model-curated-v2')!=='1'){for(const id of ['doubao-seedream-5-0-pro-260628','gk-image-2.0'])if(!state.selected.includes(id))state.selected.push(id);}
  localStorage.setItem('lk888-model-curated-v2','1');
+ if(localStorage.getItem('lk888-model-curated-v3')!=='1'){state.selected=placeCurated(state.selected,'banana-2.1');localStorage.setItem('lk888-model-curated-v3','1');}
  const firstRun=!migrated;
  if(firstRun)localStorage.setItem('lk888-model-curated-v1','1');
  const r=readJSON('lk888-model-test-results',{});state.results={};if(r&&typeof r==='object')for(const id of ids)if(r[id])state.results[id]=r[id];
@@ -49,18 +63,19 @@ function createStore(builtins){
   remove(id){state.deleted.add(id);state.selected=state.selected.filter(x=>x!==id);save();},
   restore(){state.deleted.clear();save();},
   setResult(id,res){state.results[id]={...res,at:Date.now()};save();},
-  // 主面板下拉：勾选且测试通过，按勾选顺序。若勾选的都还没测过（首次/升级），先按勾选显示，避免下拉为空。
+  // 主面板下拉按勾选顺序。推荐模型一直保留（Banana 2.1 不能因为别的模型测过就被藏起来）。
+  // 手动添加的模型在测试失败后才从下拉里拿掉。
   dropdown(){
    const byId=new Map(state.candidates.map(m=>[m.id,m]));
+   const curatedIds=new Set(CURATED.map(model=>model.id));
    const ticked=state.selected.filter(id=>byId.has(id)&&!state.deleted.has(id));
-   const passed=ticked.filter(id=>state.results[id]?.ok);
-   const anyTested=ticked.some(id=>state.results[id]);
-   return {models:(anyTested?passed:ticked).map(id=>byId.get(id)),untested:!anyTested&&ticked.length>0};
+   const models=ticked.filter(id=>curatedIds.has(id)||state.results[id]?.ok!==false).map(id=>byId.get(id));
+   return {models,untested:ticked.some(id=>!state.results[id])};
   },
-  // 平台同步：只合并进候选列表，新模型默认不勾选
-  syncFromPlatform(items){let found=0;for(const c of state.candidates){c.platform=!!resolveModel(c.id,items);if(c.platform)found++;}save();return {total:state.candidates.length,added:0,found};}
+  // 平台同步只给推荐项打标，不把全量 LK888 列表（含 -token/flare/sunburst）灌进候选。
+  syncFromPlatform(items){let found=0;const before=state.candidates.length;for(const c of state.candidates){c.platform=!!resolveModel(c.id,items);if(c.platform)found++;}save();return {total:state.candidates.length,added:state.candidates.length-before,found};}
  };
- if(firstRun)save();
+ save();
  return api;
 }
 // 单条测试：沿用现有方式（检查平台 /v1/models 是否含该 ID，不提交生图、不计费）
@@ -106,4 +121,4 @@ function renderManager({root,store,client,current,onChange,status}){
  }
  root.appendChild(list);apply();
 }
-module.exports={resolveModel,shortModelName,renderManager,isImageModel,createStore,testModels,runTests};
+module.exports={resolveModel,shortModelName,renderManager,isImageModel,createStore,testModels,runTests,CURATED,isPerCallBanana21};

@@ -14,12 +14,22 @@ class TaskQueue{
   const failures=[];
   await Promise.all(Array.from({length:record.count},async(_,index)=>{
    try{const id=await api.submit(record.model,record.instruction,images,params);record.tasks.push({id,state:'running',results:[],outputIndex:index});}
-   catch(e){failures.push(e);record.error=e.message;}
+   catch(e){
+    failures.push(e);
+    if(!e.taskId||e.terminal)record.error=e.message;
+    if(e.taskId)record.tasks.push({id:String(e.taskId),state:e.terminal?'failed':'running',results:[],outputIndex:index,error:e.terminal?e.message:null});
+   }
    finally{record.pendingSubmissions--;record.phase='已接单 '+record.tasks.length+'/'+record.count+'，待响应 '+record.pendingSubmissions;this.save();}
   }));
   record.tasks.sort((a,b)=>a.outputIndex-b.outputIndex);
   record.timings.acceptedAt=Date.now();
-  if(failures.length){record.state=failures.some(e=>!e.terminal)?'uncertain':record.tasks.some(t=>t.state==='running')?'running':'failed';record.phase='部分提交失败，请查看原任务';}
+  if(failures.length){
+   const running=record.tasks.some(t=>t.state==='running');
+   if(running)record.state='running';
+   else if(failures.some(e=>(e.uncertain||(!e.terminal&&!e.notSubmitted))&&!e.taskId))record.state='uncertain';
+   else record.state='failed';
+   record.phase=record.state==='uncertain'?'提交结果不确定，请到平台确认，勿重复生成':record.state==='failed'?'提交没有完成，可以重新生成':'部分提交失败，请查看原任务';
+  }
   else{record.phase='平台生成中';record.state=record.tasks.every(t=>t.state==='ready')?'ready':record.tasks.some(t=>t.state==='running')?'running':'failed';}
   this.save();
  }

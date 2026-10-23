@@ -58,7 +58,7 @@ function modelsStatus(msg,err){const n=$('models-status');if(n){n.textContent=ms
 function renderSavedModels(){if(!modelStore)return;renderManager({root:$("saved-models"),store:modelStore,client,current:$("model").value,status:modelsStatus,onChange:()=>{rebuildModels();renderModels();}});}
 function renderModels(){const node=$('model');if(!document.createElement)return;const selected=node.value;node.innerHTML='';const menu=document.createElement('sp-menu');menu.setAttribute('slot','options');modelList.forEach(model=>{const item=document.createElement('sp-menu-item');item.setAttribute('value',model.id);item.textContent=shortModelName(model);item.title=model.label||model.id;if(model.id===selected)item.setAttribute('selected','');item.addEventListener('click',()=>{selectModel(node,modelList,model.id);renderSavedModels();});menu.appendChild(item);});node.appendChild(menu);selectModel(node,modelList,modelList.some(m=>m.id===selected)?selected:(modelList[0]||{}).id);renderSavedModels();}
 async function syncImageModelsFromPlatform(){const items=await (await client()).models();const r=modelStore.syncFromPlatform(items);rebuildModels();renderModels();const ticked=modelStore.visible().filter(m=>modelStore.isTicked(m.id)).length;return {...r,ticked,all:items.length};}
-function addModel(id){const value=String(id||'').trim();if(!/^[A-Za-z0-9][A-Za-z0-9._:/-]{1,119}$/.test(value))throw new Error('模型 ID 请填写 2 至 120 个字母、数字或 . _ : / -。');modelStore.add({id:value,label:value},{tick:true});rebuildModels();renderModels();$('custom-model').value='';localStorage.removeItem('lk888-custom-model');modelsStatus('已添加 '+value+'，点它的 – 测试。');}
+function addModel(id){const value=String(id||'').trim();if(!/^[A-Za-z0-9][A-Za-z0-9._:/-]{1,119}$/.test(value))throw new Error('模型 ID 请填写 2 至 120 个字母、数字或 . _ : / -。');modelStore.add({id:value,label:value},{tick:true});rebuildModels();renderModels();if(modelList.some(model=>model.id===value))selectModel($('model'),modelList,value);$('custom-model').value='';localStorage.removeItem('lk888-custom-model');modelsStatus('已添加 '+value+'，点它的 – 测试。');}
 let references = [], sourceImage = null, settingsOpen = false, referenceDrag = null;
 const activeSubmissions = new Set();
 let annotationTarget=null,annotationPollToken=0;
@@ -375,11 +375,14 @@ async function generate(){voice.cancel();
  queue.submit(record,[...(hasSelection?[sourceImage]:[]),...references.map(r=>r.data)],params).then(()=>{
   activeSubmissions.delete(id);refresh();
   if(selectedJobId===id && record.state==='failed'){status(record.error||'生成失败，未返回图片。',true);return;}
-  if(selectedJobId===id)status(record.state==='uncertain'?'提交状态不确定，请在历史记录中查询原任务。':'已提交。生成在后台继续，可新建另一处改图。',record.state==='uncertain');
+  if(selectedJobId===id)status(record.state==='uncertain'?(record.error||'提交状态不确定，请在历史记录中查询原任务。'):'已提交。生成在后台继续，可新建另一处改图。',record.state==='uncertain');
   queue.tick();
  }).catch(error=>{
-  activeSubmissions.delete(id);record.state='uncertain';record.error=error.message||'提交状态不确定';queue.save();refresh();
-  if(selectedJobId===id)status(record.error+'；请先查询原任务，避免重复提交。',true);
+  activeSubmissions.delete(id);
+  record.state=error.notSubmitted||!error.uncertain?'failed':'uncertain';
+  record.error=error.message||(record.state==='uncertain'?'提交状态不确定':'提交没有发出，可以重新生成');
+  queue.save();refresh();
+  if(selectedJobId===id)status(record.error,true);
  });
 }
 async function openHistory(id){voice.cancel();if(selectedJobId!==id){cancelOptimization();clearOptimizeUndo();await saveCurrent();}const record=queue.jobs.find(j=>j.id===id);if(!record)return;record.closed=false;historyOpen=false;clearHistoryArmed=false;selectedJobId=id;tasksUI();try{capture=record.hasSelection===false?null:await restoreCapture(record.captureRef);}catch(_){capture=null;}sourceImage=capture?.sourceImage||null;references=capture?.references||[];if(record.hasSelection===false){try{references=await restoreReferences(record.captureRef||record.id);}catch(_){references=[];}}if(!sourceImage && capture){try{const folder=await fs.getDataFolder(),meta=JSON.parse(await(await folder.getEntry('selection.json')).read());if(meta.context.documentId===capture.context.documentId && JSON.stringify(meta.bounds)===JSON.stringify(capture.bounds))sourceImage=meta.sourceImage;}catch(_){}}$('prompt').value=record.prompt;promptEditor?.resize();$('model').value=record.model;$('quality').value=record.quality||'auto';$('output-size').value=record.ratio||'original';$('count').value=String(record.count||1);show('selection-gate',false);navigatePage('edit');syncInputs();status(sourceImage?'已恢复当时的选区输入。结果完成后点击图片添加图层。':record.hasSelection===false?'已恢复图片和提示词，可继续生成；结果可添加为完整图层。':'旧记录未保存输入缩略图；提示词和结果已恢复。');}
