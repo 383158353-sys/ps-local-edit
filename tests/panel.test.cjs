@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const path = require('node:path');
 const vm = require('node:vm');
 const { test } = require('node:test');
 const api = require('../plugin/api');
@@ -34,8 +35,22 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
     if(name==='./prompt-editor')return require('../plugin/prompt-editor');if(name==='./voice'){const Base=require('../plugin/voice').VoiceController;return {VoiceController:class extends Base{constructor(options){super({...options,fetchImpl:fetch});}}};}if(name==='./optimizer')return {OptimizerClient:class{cancel(){optimizerCancels++;}optimize(input){optimizerCalls.push(input);if(optimizerDeferred)return new Promise(resolve=>{resolveOptimize=resolve;});return Promise.resolve({prompt:'优化后的修改要求',images:[{name:'影词新增.png',data:'data:image/png;base64,YWJj'}]});}}};if(name==='./task-queue')return {TaskQueue};if(name==='./png')return {pngRGBA};
     if (name === './modules/fs') return { arrayBufferToBase64:v=>Buffer.from(v).toString('base64'), base64ToArrayBuffer: v => {imageDecodes++;return Uint8Array.from(Buffer.from(v, 'base64')).buffer;} };
     if (name === './api') return { ...api, MediaClient: Client };
+    if (name === './model-selection') return require('../plugin/model-selection');
+    if (name === './model-manager') return loadPanelModule(name);
     throw new Error(name);
   } };
+  function loadPanelModule(name) {
+    const filename = path.join(__dirname, '..', 'plugin', name.replace(/^\.\//, '') + '.js');
+    const module = { exports: {} };
+    vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
+      console, setTimeout, clearTimeout, document,
+      localStorage: context.localStorage,
+      module,
+      exports: module.exports,
+      require(dep) { return context.require(dep); }
+    }, { filename });
+    return module.exports;
+  }
   vm.runInNewContext(fs.readFileSync('plugin/main.js', 'utf8'), context);
   // init loads saved prompt; restore the user's entry for this run.
   nodes.prompt ||= document.getElementById('prompt');nodes.prompt.value = '改成红色';
@@ -46,6 +61,12 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
 
 test('selection uses lossless PNG and does not submit a task',async()=>{const h=harness();await h.ready();await h.nodes['capture-selection'].click();assert.match(h.nodes.preview.src,/^data:image\/png/);assert.equal(h.requests.length,0);});
 test('optimizer button is left of voice in the panel',()=>{const html=fs.readFileSync('plugin/index.html','utf8');assert.ok(html.indexOf('id="optimize-prompt"')<html.indexOf('id="voice-prompt"'));});
+test('model menu lists Banana 2.1 with the cheap-to-expensive image models',()=>{
+ const html=fs.readFileSync('plugin/index.html','utf8');
+ const menu=html.slice(html.indexOf('id="model"'),html.indexOf('id="quality"'));
+ assert.deepEqual([...menu.matchAll(/value="([^"]+)"/g)].map(match=>match[1]),['tt-image-2.5','tt-image-2','banana-2.1','banana-2','banana-pro','doubao-seedream-5-0-pro-260628','gk-image-2.0','custom']);
+ assert.match(menu,/value="banana-2.1"[^>]*>Banana 2\.1</);
+});
 test('optimizer maps selection and references in order, fills prompt and supports undo',async()=>{
  const h=harness();await h.ready();await h.nodes['capture-selection'].click();
  await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[{name:'参考.png',size:1,arrayBuffer:async()=>Uint8Array.from([2]).buffer}]}});
@@ -167,6 +188,18 @@ test('a no-selection result adds a complete image layer when clicked',async()=>{
  assert.equal(h.calls.length,1);
  assert.equal(h.calls[0].length,1);
  assert.match(h.nodes.status.textContent,/完整生成图片/);
+});
+test('the rendered model menu can select Banana 2.1 ahead of Banana Pro',async()=>{
+ const h=harness({noSelection:true});await h.ready();
+ const values=h.nodes.model.children[0].children.map(item=>item.attributes.value);
+ assert.ok(values.indexOf('banana-2.1')>=0&&values.indexOf('banana-2.1')<values.indexOf('banana-pro'));
+ assert.ok(values.indexOf('banana-pro')<values.indexOf('doubao-seedream-5-0-pro-260628'));
+ assert.ok(values.indexOf('banana-pro')<values.indexOf('gk-image-2.0'));
+ assert.equal(values.filter(id=>/token|flare|sunburst/.test(id)).length,0);
+ assert.equal(h.nodes.model.children[0].children.find(item=>item.attributes.value==='banana-2.1').textContent,'Banana 2.1');
+ h.nodes.model.value='banana-2.1';h.nodes.prompt.value='换成参考图里的人';
+ await h.nodes.generate.click();await h.ready();
+ assert.equal(h.requests[0].model,'banana-2.1');
 });
 test('a custom image model can be added, selected, and used for generation',async()=>{
  const h=harness({noSelection:true});await h.ready();

@@ -13,7 +13,7 @@ Photoshop 内的简洁 UXP 面板，通过 https://api.lk888.ai 调用生图模�
 - 多处改图可后台生成；顶部标签切换，关闭后在历史记录恢复。
 - 结果点击添加独立图层，按原坐标和尺寸回填；允许重复添加。
 - 图片右上角放大预览，预览内下载或右键保存原图。
-- 模型菜单固定为原有五项和即梦 5.0 Pro、GK Image 2.0、千问 Image Max；检查 API 只核对这些预设，不会混入聊天等其他模型。
+- 模型菜单按次从便宜到贵：GPT 图 2.5、GPT 图 2、Banana 2.1、Banana 2、Banana Pro，其后是即梦 5.0 Pro（约 0.3024/次）和 Grok 图。默认勾选。检查连接只核对这些推荐项，不会把 LK888 全量列表或 `-token` / `flare` / `sunburst` 变体灌进下拉。千问等其他 ID 仍可在设置里手动添加。
 - 语音按钮启动本机 Windows 中文听写，再点停止；文字插入修改要求。需启动本机语音助手，音频不上传到模型 API。
 
 ## 安装
@@ -30,6 +30,8 @@ Photoshop 内的简洁 UXP 面板，通过 https://api.lk888.ai 调用生图模�
 Windows 上也可运行 `scripts/install-plugin-autoload.ps1` 添加登录启动项。启动后它会在 Photoshop 每次打开时重新注册开发版插件，无需手动运行 `打开局部改图插件.cmd`。这是本机开发加载的自动恢复入口，不等于 Adobe Marketplace 正式安装。
 
 密钥保存在本机 UXP secureStorage。模型 ID 以 LK888 API 返回为准；若某预设 ID 与账号提供的模型 ID 不一致，可在设置页配置自定义 ID。模型可用性、速度及费用以平台账号为准。一次生成多张会提交多个任务。
+
+生图提交直连 `https://api.lk888.ai/v1/media/generate`，不经过本机语音端口。连接还没建立时会有限重试，并说明这次没有发出、可以重新生成；请求已经发出后超时则不会自动再提交。验收步骤见 [ACCEPTANCE.md](ACCEPTANCE.md)。
 
 ## 开发
 
