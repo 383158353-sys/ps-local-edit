@@ -52,6 +52,34 @@ test('prompt height follows its content and stops growing after the limit',()=>{
   h.input.value='文字'.repeat(300);h.editor.changed();assert.equal(h.input.style.height,'320px');
 });
 
+function pasteThatAlsoInsertsNatively(text){
+  const event=pasteEvent();
+  const prevent=event.preventDefault.bind(event);
+  event.preventDefault=function(){prevent();const input=event.target;if(!input)return;const start=input.selectionStart,end=input.selectionEnd,value=input.value||'';input.value=value.slice(0,start)+text+value.slice(end);input.selectionStart=input.selectionEnd=start+text.length;};
+  return event;
+}
+test('UXP native paste is not inserted a second time',async()=>{
+  const h=fixture({clipboard:{getContent:async()=>({'text/plain':'测试一下'})},readImageClipboard:async()=>({text:'测试一下'})});
+  h.input.value='';h.input.selectionStart=h.input.selectionEnd=0;
+  h.input.events.keydown({key:'v',ctrlKey:true,stopPropagation(){},preventDefault(){}});
+  const event=pasteThatAlsoInsertsNatively('测试一下');event.target=h.input;
+  h.input.events.paste(event);await flush();await new Promise(resolve=>setTimeout(resolve,140));
+  assert.equal(h.input.value,'测试一下');
+});
+test('context-menu paste stays single when UXP also inserts the text',async()=>{
+  const h=fixture({clipboard:{getContent:async()=>({'text/plain':'测试一下'})}});
+  h.input.value='';h.input.selectionStart=h.input.selectionEnd=0;
+  const event=pasteThatAlsoInsertsNatively('测试一下');event.target=h.input;
+  h.input.events.paste(event);await flush();
+  assert.equal(h.input.value,'测试一下');assert.equal(event.prevented,true);
+});
+test('a screenshot still becomes a reference when UXP also dumps text into the prompt',async()=>{
+  const h=fixture({clipboard:{getContent:async()=>({})},readImageClipboard:async()=>({image:'data:image/png;base64,YWJj'})});
+  h.input.selectionStart=h.input.selectionEnd=h.input.value.length;
+  const event=pasteThatAlsoInsertsNatively('截图');event.target=h.input;
+  h.input.events.paste(event);await flush();
+  assert.deepEqual(h.images,['data:image/png;base64,YWJj']);assert.equal(h.input.value,'红色花瓶');
+});
 test('Ctrl+V followed by a paste event inserts clipboard content exactly once',async()=>{
   let reads=0;const h=fixture({clipboard:{getContent:async()=>{reads++;return {'text/plain':'加上'};}}});
   let keyDefaultPrevented=false;h.input.events.keydown({key:'v',ctrlKey:true,stopPropagation(){},preventDefault(){keyDefaultPrevented=true;}});
