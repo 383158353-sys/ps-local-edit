@@ -5,42 +5,55 @@ const { test } = require('node:test');
 const api = require('../plugin/api');
 const {TaskQueue}=require('../plugin/task-queue');const {pngRGBA}=require('../plugin/png');
 
-function harness({ switchDocument = false, reopenSameDocument = false, reopenPathless = false, submissionFails = false, optimizerDeferred = false, noSelection = false } = {}) {
-  const nodes = {}, local = new Map(), calls = [], writes = [], requests = [], reads = [], docEvents = {}, helperCalls=[],optimizerCalls=[];let reloads=0, imageDecodes=0,optimizerCancels=0,resolveOptimize;
+function harness({ switchDocument = false, reopenSameDocument = false, reopenPathless = false, submissionFails = false, submissionMessage = '', helperDown = false, optimizerDeferred = false, noSelection = false, captureHangs = false, captureMismatch = false, captureError = '', boundsThrows = false, busyTimeoutMs = 0, entryForUrl = null, dropQueue = null } = {}) {
+  const nodes = {}, local = new Map(), calls = [], writes = [], requests = [], reads = [], docEvents = {}, helperCalls=[],optimizerCalls=[],captureArgs=[];let reloads=0, imageDecodes=0,optimizerCancels=0,resolveOptimize;
   function makeNode(id='') { const node={id,value:id==='prompt'?'改成红色':id==='model'?'banana-2':'',textContent:'',hidden:false,style:{},children:[],attributes:{},className:'',classList:{add(){},remove(){}},addEventListener(event,fn){this[event]=fn;},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},append(...items){for(const item of items)this.appendChild(item);},appendChild(item){item.parentNode=this;this.children.push(item);},replaceChildren(...items){this.children=[];this.append(...items);},get parentElement(){return makeNode('parent');}};Object.defineProperty(node,'innerHTML',{get(){return '';},set(value){if(value==='')this.children=[];}});return node; }
   const document = { readyState: 'interactive', addEventListener(event,fn) {docEvents[event]=fn;}, createElement: tag=>makeNode(tag), getElementById(id) { return nodes[id] ||= makeNode(id); },querySelectorAll(){return [];} };
-  const originalDoc = { id: 12, name: 'sample.psd', path: 'C:/project/sample.psd', width: 1000, height: 800, mode: 'RGB', selection: noSelection ? null : { bounds: {left:150,top:120,right:350,bottom:240} } };
+  const selection = noSelection ? null : { bounds: {left:150,top:120,right:350,bottom:240} };
+  if (boundsThrows && selection) Object.defineProperty(selection, 'bounds', { get() { throw new Error('dom bounds blocked'); } });
+  const originalDoc = { id: 12, name: 'sample.psd', path: 'C:/project/sample.psd', width: 1000, height: 800, mode: 'RGB', selection };
   const app = { activeDocument: originalDoc };
   const bounds = { left: 120, top: 90, right: 420, bottom: 290, width: 300, height: 200 };
   const mask = { width: 300, height: 200, components: 1, imageData: new Uint8Array(60000) };
   const capture = { bounds, maskData: mask, documentWidth:1000,documentHeight:800,context: { documentId: 12, documentName: 'sample.psd', documentPath:reopenPathless?'':'C:/project/sample.psd', originalBounds: { left: 150, top: 120, right: 350, bottom: 240 } }, imageData: { sourceBounds: bounds, imageData: { width: 300, height: 200, components:4,getData:async()=>new Uint8Array(300*200*4), dispose() {} } } };
-  const ps = { getSelectionBounds:async()=>({left:150,top:120,right:350,bottom:240,width:200,height:120}),captureSelection: async () => capture, placeBack: async (...args) => calls.push(args),placeGeneratedAsLayer:async (...args)=>calls.push(args) };
+  const ps = { getSelectionBounds:async()=>({left:150,top:120,right:350,bottom:240,width:200,height:120}),hasActiveSelection:async()=>!noSelection,captureSelection: async (...args) => { captureArgs.push(args); if (captureError) throw new Error(captureError); if (captureHangs) return new Promise(() => {}); if (captureMismatch) return {...capture, imageData:{ sourceBounds:{ left:11.5, top:7.25, right:311.5, bottom:207.25 }, imageData:capture.imageData.imageData }}; return capture; }, placeBack: async (...args) => calls.push(args),placeGeneratedAsLayer:async (...args)=>calls.push(args) };
   const dataFiles=new Map();const folder={createFile:async name=>({write:async value=>dataFiles.set(name,value)}),getEntry:async name=>{reads.push(name);return {read:async()=>dataFiles.get(name)};}};
-  const storage = { formats: { binary: 'binary' }, secureStorage: { getItem: async () => new Uint8Array(Buffer.from('test-key')) }, localFileSystem: { getDataFolder:async()=>folder,getTemporaryFolder: async () => ({ createFile: async () => ({ write: async value => writes.push(value) }) }), createSessionToken: () => 'session-token' } };
+  const storage = { formats: { binary: 'binary' }, secureStorage: { getItem: async () => new Uint8Array(Buffer.from('test-key')) }, localFileSystem: { getDataFolder:async()=>folder,getTemporaryFolder: async () => ({ createFile: async () => ({ write: async value => writes.push(value) }) }), createSessionToken: () => 'session-token', ...(entryForUrl?{getEntryWithUrl:entryForUrl}:{}) } };
   const fetch = async (url, options) => {
+    if(helperDown&&String(url).includes('127.0.0.1:17402'))return {ok:false,status:404,json:async()=>({message:'语音会话已结束，请重新开始。'})};
     if(url.includes('127.0.0.1:17402/annotate/')){helperCalls.push({url,options});return {ok:true,json:async()=>url.includes('/open')?{id:'test-annotation'}:{state:'waiting'}};}
-    if(url.includes('127.0.0.1:17402/drop/')){helperCalls.push({url,options});return {ok:true,json:async()=>url.includes('/open')?{id:'test-drop'}:{references:[{name:'拖入.png',data:'data:image/png;base64,YWJj'}]}};}
-    if (url.endsWith('/generate')) { requests.push(JSON.parse(options.body)); if (submissionFails) throw new Error('connection lost'); return { ok: true, json: async () => ({ task_id: requests.length===1?'existing-task':'task-'+requests.length }) }; }
+    if(url.includes('127.0.0.1:17402/drop/read')){helperCalls.push({url,options});const body=JSON.parse(options.body||'{}');const references=(Array.isArray(body.paths)?body.paths:[]).map(item=>({name:String(item).split(/[/\\]/).pop(),data:'data:image/png;base64,YWJj'}));return {ok:true,json:async()=>({references})};}
+    if(url.includes('127.0.0.1:17402/drop/poll')){helperCalls.push({url,options});const references=dropQueue?dropQueue.shift()||[]:[];return {ok:true,json:async()=>({references})};}
+    if(url.includes('127.0.0.1:17402/drop/arm')||url.includes('127.0.0.1:17402/drop/hide')){helperCalls.push({url,options});return {ok:true,json:async()=>({state:'ready'})};}
+    if(url.includes('127.0.0.1:17402/drop/cover')||url.includes('127.0.0.1:17402/drop/open')){helperCalls.push({url,options});return {ok:true,json:async()=>({id:'test-drop'})};}
+    if(url.includes('127.0.0.1:17402/drop/')){helperCalls.push({url,options});return {ok:true,json:async()=>({state:'ok'})};}
+    if (url.endsWith('/generate')) { requests.push(JSON.parse(options.body)); if (submissionMessage) return { ok:false, status:400, json:async()=>({error:{message:submissionMessage}}) }; if (submissionFails) throw new Error('connection lost'); return { ok: true, json: async () => ({ task_id: requests.length===1?'existing-task':'task-'+requests.length }) }; }
     if (switchDocument) app.activeDocument = { ...originalDoc, id: 99, path:'C:/project/other.psd' };
     if (reopenSameDocument) app.activeDocument = { ...originalDoc, id: 99 };
     if (reopenPathless) app.activeDocument = { ...originalDoc, id: 99, path:'C:/project/sample.psd' };
     return { ok: true, json: async () => ({ is_final: true, state: 'success', result_url: 'data:image/png;base64,YWJj' }) };
   };
   class Client extends api.MediaClient { constructor(key) { super(key, fetch); } }
-  const context = { document, location:{reload:()=>{reloads++;}}, localStorage: { getItem: k => local.get(k) || null, setItem: (k, v) => local.set(k, v), removeItem: k => local.delete(k) }, setTimeout, clearTimeout, Uint8Array, console, fetch, require(name) {
+  const context = { __lk888BusyTimeoutMs: busyTimeoutMs || undefined, document, location:{reload:()=>{reloads++;}}, localStorage: { getItem: k => local.get(k) || null, setItem: (k, v) => local.set(k, v), removeItem: k => local.delete(k) }, setTimeout, clearTimeout, Uint8Array, console, fetch, require(name) {
     if (name === 'photoshop') return { app, imaging: { encodeImageData: async () => 'YWJj' }, constants: { DocumentMode: { RGB: 'RGB' } } };
     if (name === 'uxp') return { storage };
     if (name === './modules/ps') return ps;if(name==='./modules/geometry')return require('../plugin/modules/geometry');
     if(name==='./prompt-editor')return require('../plugin/prompt-editor');if(name==='./voice'){const Base=require('../plugin/voice').VoiceController;return {VoiceController:class extends Base{constructor(options){super({...options,fetchImpl:fetch});}}};}if(name==='./optimizer')return {OptimizerClient:class{cancel(){optimizerCancels++;}optimize(input){optimizerCalls.push(input);if(optimizerDeferred)return new Promise(resolve=>{resolveOptimize=resolve;});return Promise.resolve({prompt:'优化后的修改要求',images:[{name:'影词新增.png',data:'data:image/png;base64,YWJj'}]});}}};if(name==='./task-queue')return {TaskQueue};if(name==='./png')return {pngRGBA};
     if (name === './modules/fs') return { arrayBufferToBase64:v=>Buffer.from(v).toString('base64'), base64ToArrayBuffer: v => {imageDecodes++;return Uint8Array.from(Buffer.from(v, 'base64')).buffer;} };
     if (name === './api') return { ...api, MediaClient: Client };
+    if (name === './model-selection') return require('../plugin/model-selection');
+    if (name === './model-manager') {
+      const module = { exports: {} };
+      vm.runInNewContext(fs.readFileSync('plugin/model-manager.js', 'utf8'), { module, exports: module.exports, console, document, localStorage: context.localStorage, require(inner) { throw new Error(inner); } }, { filename: 'model-manager.js' });
+      return module.exports;
+    }
     throw new Error(name);
   } };
   vm.runInNewContext(fs.readFileSync('plugin/main.js', 'utf8'), context);
   // init loads saved prompt; restore the user's entry for this run.
   nodes.prompt ||= document.getElementById('prompt');nodes.prompt.value = '改成红色';
   document.getElementById('quality'); document.getElementById('output-size');
-  return { newDraft:()=>context.newDraft(),openHistory:id=>context.openHistory(id), currentId:()=>vm.runInNewContext("selectedJobId",context), nodes, docEvents, calls, writes, reads, local, capture, requests, helperCalls, optimizerCalls,resolveOptimize:value=>resolveOptimize?.(value),saveAnnotation:image=>context.saveAnnotation(image),get optimizerCancels(){return optimizerCancels;}, get reloads(){return reloads;}, get imageDecodes(){return imageDecodes;}, ready:async()=>{for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r));nodes.prompt.value='改成红色';} };
+  return { app, newDraft:()=>context.newDraft(),openHistory:id=>context.openHistory(id), currentId:()=>vm.runInNewContext("selectedJobId",context), nodes, docEvents, calls, writes, reads, local, capture, captureArgs, requests, helperCalls, optimizerCalls,resolveOptimize:value=>resolveOptimize?.(value),saveAnnotation:image=>context.saveAnnotation(image),get optimizerCancels(){return optimizerCancels;}, get reloads(){return reloads;}, get imageDecodes(){return imageDecodes;}, ready:async()=>{for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r));nodes.prompt.value='改成红色';} };
 }
 
 
@@ -72,16 +85,66 @@ test('dropping UXP and browser files adds numbered reference images',async()=>{
  assert.equal(tiles[1].children[0].textContent,'2');
  assert.equal(tiles[0].children[2].textContent,'第一张.png');
  assert.equal(tiles[1].children[2].textContent,'第二张.jpg');
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/')));
  await h.nodes['capture-selection'].click();
  assert.equal(h.nodes['reference-thumbs'].children.length,2);
 });
-test('unreadable Explorer drop reports the problem without opening a second window',async()=>{
- const h=harness();await h.ready();
- await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[],items:[]}});
- await h.ready();
- assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/')));
+test('an empty UXP drop is caught by the overlay and does not open a dialog',async()=>{
+ const h=harness({dropQueue:[[{name:'拖入.png',data:'data:image/png;base64,YWJj'}]]});await h.ready();
+ const enter=h.nodes['images-row'].dragenter({preventDefault(){},screenX:320,screenY:240,dataTransfer:{types:['Files'],files:[],items:[]}});
+ await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
+ await enter;
+ await new Promise(resolve=>setTimeout(resolve,80));
+ const cover=h.helperCalls.find(call=>call.url.includes('/drop/cover')&&call.options.method==='POST');
+ assert.ok(cover);
+ assert.deepEqual(JSON.parse(cover.options.body),{x:320,y:240});
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
+ assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/poll?id=test-drop')));
+ assert.equal(h.nodes['reference-thumbs'].children.length,1);
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'拖入.png');
+ assert.doesNotMatch(h.nodes.status.textContent,/该来源没有提供可读取的图片|语音会话|提交状态不确定|局部改图 · 拖入/);
+});
+test('the overlay keeps polling until the same drag delivers the picture',async()=>{
+ const queue=[[],[{name:'窗口.jpg',data:'data:image/jpeg;base64,YWJj'}]];
+ const h=harness({dropQueue:queue});await h.ready();
+ const enter=h.nodes.dropzone.dragenter({preventDefault(){},dataTransfer:{types:['Files'],files:[],items:[]}});
+ await h.nodes.dropzone.drop({preventDefault(){},stopPropagation(){},target:h.nodes.dropzone,dataTransfer:{files:[],items:[]}});
+ await enter;
+ assert.match(h.nodes.status.textContent,/正在加入拖入的图片/);
  assert.equal(h.nodes['reference-thumbs'].children.length,0);
- assert.match(h.nodes.status.textContent,/微信图片请先另存到文件夹再拖入.*Ctrl\+V/);
+ await new Promise(resolve=>setTimeout(resolve,700));
+ assert.equal(h.nodes['reference-thumbs'].children.length,1);
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'窗口.jpg');
+ assert.match(h.nodes.status.textContent,/已添加 1 张参考图/);
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
+});
+test('a panel drop outside the image row still uses the overlay instead of a dialog',async()=>{
+ const h=harness({dropQueue:[[{name:'拖入.png',data:'data:image/png;base64,YWJj'}]]});await h.ready();
+ const enter=h.docEvents.dragenter({preventDefault(){},dataTransfer:{types:['Files'],files:[],items:[]}});
+ await h.docEvents.drop({preventDefault(){},stopPropagation(){},target:h.nodes.status,dataTransfer:{files:[],items:[]}});
+ await enter;
+ await new Promise(resolve=>setTimeout(resolve,80));
+ assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/cover')));
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'拖入.png');
+});
+test('an empty drop with no drag does not open a dialog',async()=>{
+ const h=harness();await h.ready();
+ await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
+ assert.equal(h.nodes['reference-thumbs'].children.length,0);
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(open|cover)/.test(call.url)));
+ assert.match(h.nodes.status.textContent,/这次没有读到拖入的图片/);
+ assert.doesNotMatch(h.nodes.status.textContent,/该来源没有提供可读取的图片|语音会话/);
+});
+test('a nameless PNG or JPEG is recognized from its bytes',async()=>{
+ const h=harness();await h.ready();
+ const png=Uint8Array.from([0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A,1]);
+ const jpg=Uint8Array.from([0xFF,0xD8,0xFF,0xD9]);
+ await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[{name:'',arrayBuffer:async()=>png.buffer}]}});
+ await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[{name:'camera',type:'application/octet-stream',arrayBuffer:async()=>jpg.buffer}]}});
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'拖入图片.png');
+ assert.equal(h.nodes['reference-thumbs'].children[1].children[2].textContent,'camera.jpg');
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(open|cover|read)/.test(call.url)));
 });
 test('items-only and getFiles-only drops add images with missing MIME types',async()=>{
  const h=harness();await h.ready();
@@ -92,11 +155,68 @@ test('items-only and getFiles-only drops add images with missing MIME types',asy
  assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'微信另存.png');
  assert.equal(h.nodes['reference-thumbs'].children[1].children[2].textContent,'电脑图片.jpg');
 });
-test('unreadable file drop gives a concrete save-or-paste fallback',async()=>{
+test('a file UXP cannot read and that has no path is caught by the overlay',async()=>{
+ const h=harness({dropQueue:[[{name:'拖入.png',data:'data:image/png;base64,YWJj'}]]});await h.ready();
+ const enter=h.nodes['images-row'].dragenter({preventDefault(){},dataTransfer:{types:['Files'],files:[]}});
+ await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[{name:'微信图片.png',size:1,arrayBuffer:async()=>{throw new Error('access denied');}}]}});
+ await enter;
+ await new Promise(resolve=>setTimeout(resolve,80));
+ assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/cover')));
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/read')));
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'拖入.png');
+ assert.doesNotMatch(h.nodes.status.textContent,/该来源没有提供可读取的图片|语音会话|请添加 PNG、JPG 或 WebP/);
+});
+test('Explorer file URL is captured before the drop transfer is cleared and read without the helper',async()=>{
+ let readStarted=false;
+ const urls=[];
+ const h=harness({entryForUrl:async url=>{urls.push(url);return {name:'参考.png',read:async()=>Uint8Array.from([9]).buffer};}});
+ await h.ready();
+ await h.nodes.dropzone.drop({preventDefault(){},target:h.nodes.dropzone,dataTransfer:{
+  files:[{name:'参考.png',arrayBuffer:async()=>{readStarted=true;throw new Error('access denied');}}],
+  getData(type){return !readStarted&&type==='text/uri-list'?'file:///C:/pics/%E5%8F%82%E8%80%83.png':'';}
+ }});
+ assert.equal(h.nodes['reference-thumbs'].children.length,1);
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'参考.png');
+ assert.match(decodeURIComponent(urls[0]),/参考\.png/);
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/')));
+});
+test('Explorer path is read by the local helper when UXP cannot read the dropped file',async()=>{
  const h=harness();await h.ready();
- await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[{name:'微信图片.png',size:1,arrayBuffer:async()=>{throw new Error('access denied');}}]}});
- assert.match(h.nodes.status.textContent,/另存到文件夹.*Ctrl\+V/);
+ const blocked=name=>async()=>{throw new Error('access denied');};
+ await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[
+  {name:'参考.jpg',path:'C:\\pics\\参考.jpg',arrayBuffer:blocked('jpg')},
+  {name:'第二张.webp',nativePath:'D:\\img\\第二张.webp',arrayBuffer:blocked('webp')}
+ ]}});
+ assert.equal(h.helperCalls.filter(call=>call.url.includes('/drop/read')).length,1);
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
+ assert.deepEqual(JSON.parse(h.helperCalls.find(call=>call.url.includes('/drop/read')).options.body).paths,['C:\\pics\\参考.jpg','D:\\img\\第二张.webp']);
+ assert.equal(h.nodes['reference-thumbs'].children.length,2);
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'参考.jpg');
+ assert.equal(h.nodes['reference-thumbs'].children[1].children[2].textContent,'第二张.webp');
+});
+test('a file UXP can read does not call the helper even if it also has a path',async()=>{
+ const h=harness({entryForUrl:async()=>{throw new Error('permission denied');}});
+ await h.ready();
+ await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[{name:'直接.png',path:'C:\\pics\\直接.png',arrayBuffer:async()=>Uint8Array.from([4]).buffer}]}});
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'直接.png');
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/')));
+});
+test('unreadable Explorer drop names a closed helper instead of a voice session',async()=>{
+ const h=harness({helperDown:true});await h.ready();
+ await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[{name:'参考.png',path:'C:\\pics\\参考.png',arrayBuffer:async()=>{throw new Error('access denied');}}]}});
  assert.equal(h.nodes['reference-thumbs'].children.length,0);
+ assert.match(h.nodes.status.textContent,/本机图片拖入服务未开启/);
+ assert.doesNotMatch(h.nodes.status.textContent,/语音会话|提交状态不确定/);
+});
+test('an empty drop with the helper closed does not show a voice session',async()=>{
+ const h=harness({helperDown:true});await h.ready();
+ await h.nodes['images-row'].dragenter({preventDefault(){},dataTransfer:{types:['Files'],files:[],items:[]}});
+ await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
+ assert.equal(h.nodes['reference-thumbs'].children.length,0);
+ assert.match(h.nodes.status.textContent,/本机图片拖入服务未开启/);
+ assert.doesNotMatch(h.nodes.status.textContent,/语音会话|该来源没有提供可读取的图片|提交状态不确定/);
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
 });
 
 test('dropping on an occupied reference replaces only that slot; dropping on the empty slot appends',async()=>{
@@ -202,6 +322,46 @@ test('invalid mixed file drop does not leave a partial reference list',async()=>
  assert.match(h.nodes.status.textContent,/PNG、JPG 或 WebP/);
 });
 test('generation releases editor and never auto imports results',async()=>{const h=harness();await h.ready();await h.nodes.generate.click();await h.ready();assert.equal(h.requests.length,1);assert.equal(h.calls.length,0);assert.equal(h.nodes.generate.disabled,false);assert.ok(JSON.parse(h.local.get('lk888-jobs'))[0].tasks[0].results.length);});
+test('same-size document with a new id is adopted instead of asking for another selection read',async()=>{
+ const h=harness();await h.ready();await h.nodes['capture-selection'].click();
+ h.app.activeDocument.id=77;
+ h.nodes.prompt.value='字体写清楚';await h.nodes.generate.click();await h.ready();
+ assert.equal(h.requests.length,1);
+ assert.equal(h.capture.context.documentId,77);
+ assert.doesNotMatch(h.nodes.status.textContent,/请读取当前文档选区|语音会话|提交状态不确定/);
+});
+test('a different canvas size still asks for the current document selection',async()=>{
+ const h=harness();await h.ready();await h.nodes['capture-selection'].click();
+ h.app.activeDocument.id=77;h.app.activeDocument.width=50;h.app.activeDocument.height=50;
+ h.nodes.prompt.value='字体写清楚';await h.nodes.generate.click();await h.ready();
+ assert.equal(h.requests.length,0);
+ assert.match(h.nodes.status.textContent,/请读取当前文档选区/);
+ assert.doesNotMatch(h.nodes.status.textContent,/语音会话/);
+});
+test('a closed helper skips image prepare, submits the original, and never shows voice copy',async()=>{
+ const h=harness({helperDown:true});await h.ready();await h.nodes['capture-selection'].click();
+ h.nodes.prompt.value='字体写清楚小浣熊干脆面';await h.nodes.generate.click();await h.ready();
+ const notes=(h.nodes['task-content'].children||[]).map(node=>node.textContent||'').join('\n');
+ const text=h.nodes.status.textContent+'\n'+notes;
+ assert.equal(h.requests.length,1);
+ assert.match(text,/本机助手未开启/);
+ assert.doesNotMatch(text,/语音会话|提交状态不确定|尚无生成结果|请读取当前文档选区/);
+ const job=JSON.parse(h.local.get('lk888-jobs'))[0];
+ assert.notEqual(job.state,'uncertain');
+ assert.ok(job.tasks.length||job.state==='ready'||job.state==='running'||job.state==='failed');
+});
+test('generation failure shows the provider reason and never a voice-session or uncertain status',async()=>{
+ const h=harness({submissionMessage:'模型不存在或当前密钥无权限'});await h.ready();
+ h.nodes.prompt.value='字体写清楚小浣熊干脆面';await h.nodes.generate.click();await h.ready();
+ assert.match(h.nodes.status.textContent,/模型不存在或当前密钥无权限/);
+ assert.doesNotMatch(h.nodes.status.textContent,/提交状态不确定|语音会话/);
+ assert.doesNotMatch(h.nodes['input-notice']?.textContent||'',/语音/);
+ const notes=(h.nodes['task-content'].children||[]).map(node=>node.textContent||'').join('\n');
+ assert.match(notes,/模型不存在或当前密钥无权限/);
+ assert.doesNotMatch(notes,/尚无生成结果|语音会话|提交状态不确定/);
+ const job=JSON.parse(h.local.get('lk888-jobs'))[0];
+ assert.equal(job.state,'failed');assert.match(job.error,/模型不存在或当前密钥无权限/);
+});
 test('reload button saves the current editor and reloads without resubmitting',async()=>{const h=harness();await h.ready();await h.nodes['tab-edit'].click();h.nodes.prompt.value='保留这个提示词';await h.nodes['reload-panel'].click();assert.equal(h.reloads,1);assert.equal(JSON.parse(h.local.get('lk888-jobs'))[0].prompt,'保留这个提示词');assert.equal(h.local.get('lk888-reload-job-id'),JSON.parse(h.local.get('lk888-jobs'))[0].id);assert.equal(h.requests.length,0);});
 test('automatic generation size and ratio follow the selected region',async()=>{const h=harness();await h.ready();await h.nodes['capture-selection'].click();await h.nodes.generate.click();await h.ready();assert.equal(h.requests[0].params.image_size,'1K');assert.equal(h.requests[0].params.aspect_ratio,'16:9');});
 test('another region can submit while previous task remains in history',async()=>{const h=harness();await h.ready();await h.nodes.generate.click();await h.ready();await h.nodes['capture-selection'].click();h.nodes.prompt.value='修改另一区域';await h.nodes.generate.click();await h.ready();assert.equal(h.requests.length,2);assert.equal(JSON.parse(h.local.get('lk888-jobs')).length,2);assert.equal(h.calls.length,0);});
@@ -299,6 +459,62 @@ test('native scrollbar arrows advance exactly two ordered rows without duplicate
  assert.doesNotMatch(fs.readFileSync('plugin/index.html','utf8'),/id="tabs-(up|down)"/);
 });
 
+test('a hung read reports progress, a second click is not silent, and the timeout unlocks the panel',async()=>{
+ const h=harness({captureHangs:true,busyTimeoutMs:300});await h.ready();
+ const pending=h.nodes['capture-selection'].click();
+ await new Promise(resolve=>setTimeout(resolve,0));
+ assert.match(h.nodes.status.textContent,/正在读取选区/);
+ assert.equal(h.nodes.generate.textContent,'正在准备…');
+ await h.nodes['capture-selection'].click();
+ assert.match(h.nodes.status.textContent,/正在处理/);
+ await pending;
+ assert.match(h.nodes.status.textContent,/解除锁定/);
+ assert.equal(h.nodes.generate.disabled,false);
+ assert.equal(h.nodes.generate.textContent,'生成');
+});
+test('reload stays available while a selection read is still busy',async()=>{
+ const h=harness({captureHangs:true,busyTimeoutMs:1000});await h.ready();
+ const pending=h.nodes['capture-selection'].click();
+ await new Promise(resolve=>setTimeout(resolve,0));
+ assert.match(h.nodes.status.textContent,/正在读取选区/);
+ await h.nodes['reload-panel'].click();
+ assert.equal(h.reloads,1);
+ assert.match(h.nodes.status.textContent,/正在重载面板|正在读取选区|正在处理/);
+ pending.catch(()=>{});
+});
+test('selection read accepts a capture whose reported origin does not exactly match the crop',async()=>{
+ const h=harness({captureMismatch:true});await h.ready();
+ await h.nodes['capture-selection'].click();
+ assert.doesNotMatch(h.nodes['selection-size'].textContent,/尚未读取/);
+ assert.match(h.nodes.status.textContent,/已读取选区/);
+ assert.match(h.nodes.preview.src,/^data:image\/png/);
+ assert.equal(h.captureArgs[0][3].selectionBounds.width,200);
+ assert.equal(h.nodes.generate.textContent,'生成');
+});
+test('reading a selection does not depend on the synchronous selection.bounds getter',async()=>{
+ const h=harness({boundsThrows:true});await h.ready();
+ await h.nodes['capture-selection'].click();
+ assert.match(h.nodes.status.textContent,/已读取选区/);
+ assert.doesNotMatch(h.nodes['selection-size'].textContent,/尚未读取/);
+});
+test('a capture failure stays on the status line and releases the lock',async()=>{
+ const h=harness({captureError:'选区导出失败：模拟'});await h.ready();
+ await h.nodes['capture-selection'].click();
+ assert.match(h.nodes.status.textContent,/选区导出失败：模拟/);
+ assert.match(h.nodes['selection-size'].textContent,/尚未读取选区/);
+ assert.equal(h.nodes.generate.disabled,false);
+ assert.equal(h.nodes.generate.textContent,'生成');
+});
+test('result thumbnails keep their source and do not download the original until add or save',async()=>{
+ const h=harness();await h.ready();await h.nodes.generate.click();await h.ready();
+ const img=findNode(h.nodes['task-content'],node=>node.id==='img');
+ if(img.onload)await img.onload();
+ if(img.onerror)await img.onerror();
+ assert.equal(h.imageDecodes,0);
+ assert.match(img.src,/^data:image\/png/);
+ await button(h.nodes['task-content'],'添加图层').onclick();await h.ready();
+ assert.equal(h.imageDecodes,1);
+});
 test('uploaded references survive reopening a draft without a selection',async()=>{
  const h=harness({noSelection:true});await h.ready();await h.newDraft();
  await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[{name:'保留.png',size:1,arrayBuffer:async()=>Uint8Array.from([9]).buffer}]}});

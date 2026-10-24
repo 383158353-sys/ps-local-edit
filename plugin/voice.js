@@ -6,11 +6,26 @@ class VoiceController {
   }
   update(state,message){this.phase=state;this.onState({state,message});}
   async request(path,method='GET',body=null) {
-    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),path.startsWith('/pick-images')?185000:path.startsWith('/clipboard')||path.startsWith('/annotate')||path.startsWith('/images/prepare')?25000:5000);
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),path.startsWith('/pick-images')?185000:path.startsWith('/clipboard')||path.startsWith('/annotate')||path.startsWith('/images/prepare')||path.startsWith('/drop')?25000:5000);
+    const preparing=path.startsWith('/images/prepare');
     try {
       const response=await this.fetch('http://127.0.0.1:17402'+path,{method,signal:controller.signal,credentials:'omit',headers:{'X-PS-Local-Voice':'1',...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});
-      const data=await response.json();if(!response.ok)throw new Error(data.message||'本机语音服务异常。');return data;
+      let data={};
+      try{data=await response.json();}catch(_){data={};}
+      if(!response.ok){
+        const raw=String(data.message||'');
+        // The helper's unmatched-route 404 is the voice-session sentence. Never let that text leave this class.
+        if(preparing||/语音会话|未知语音请求|本机服务没有这个接口/.test(raw)){
+          const error=new Error('本机助手未开启。');
+          error.sessionGone=!preparing;
+          throw error;
+        }
+        throw new Error(raw||'本机服务异常。');
+      }
+      return data;
     } catch(error) {
+      if(preparing)throw new Error('本机助手未开启。');
+      if(error.sessionGone)throw error;
       if(error.name==='AbortError'||/fetch|network|connect/i.test(error.message||''))throw new Error((path.startsWith('/clipboard')?'本机截图粘贴服务':path.startsWith('/drop')?'本机图片拖入服务':path.startsWith('/annotate')?'本机图片标注服务':'本机语音服务')+'未连接。请双击“打开局部改图插件.cmd”后重试。');
       throw error;
     } finally {clearTimeout(timer);}
@@ -51,7 +66,7 @@ class VoiceController {
       this.update(data.state,data.message||(listeningMessage|| (data.state==='stopping'?'正在结束听写…':'正在启动中文听写…')));
       if(['complete','error'].includes(data.state)){this.session=null;return;}
       this.timer=setTimeout(()=>this.poll(epoch),350);
-    } catch(error){if(epoch===this.epoch){const id=this.session?.id;this.session=null;this.update('error',error.message);if(id)this.request('/stop?id='+encodeURIComponent(id),'POST').catch(()=>{});}}
+    } catch(error){if(epoch===this.epoch){const id=this.session?.id;this.session=null;if(error.sessionGone||/语音会话/.test(error.message||'')){this.update('idle','');return;}this.update('error',error.message);if(id)this.request('/stop?id='+encodeURIComponent(id),'POST').catch(()=>{});}}
   }
   async stop() {
     if(!this.session){this.cancel();return;}
@@ -60,7 +75,10 @@ class VoiceController {
     catch(error){if(epoch===this.epoch){this.cancel();this.update('error',error.message);}}
   }
   cancel() {
-    ++this.epoch;clearTimeout(this.timer);const id=this.session?.id;this.session=null;this.update('idle','');
+    ++this.epoch;clearTimeout(this.timer);const id=this.session?.id;this.session=null;
+    const live=['starting','listening','stopping'].includes(this.phase);
+    this.phase='idle';
+    if(live)this.update('idle','');
     if(id)this.request('/stop?id='+encodeURIComponent(id),'POST').catch(()=>{});
   }
 }

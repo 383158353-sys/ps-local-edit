@@ -157,25 +157,46 @@ function getDocAspectRatioLabel(w, h) {
  * @param {boolean} viaTempDocCreation - If true, uses a slower method that preserves transparency by creating a temporary document.
  * @returns {Promise<{imageData: ImageData, maskData: ImageData, bounds: object, context: object}>}
  */
+function normalizeBounds(bounds) {
+    if (!bounds) return null;
+    const num = value => {
+        const raw = value && typeof value === 'object' && '_value' in value ? value._value : value;
+        const number = Number(raw);
+        return Number.isFinite(number) ? number : null;
+    };
+    const left = num(bounds.left);
+    const top = num(bounds.top);
+    let right = num(bounds.right);
+    let bottom = num(bounds.bottom);
+    let width = num(bounds.width);
+    let height = num(bounds.height);
+    if (width == null && left != null && right != null) width = right - left;
+    if (height == null && top != null && bottom != null) height = bottom - top;
+    if (left == null || top == null || !(width > 0) || !(height > 0)) return null;
+    if (right == null) right = left + width;
+    if (bottom == null) bottom = top + height;
+    return { left, top, right, bottom, width, height };
+}
+
 async function captureSelection(sourceMode, viaTempDocCreation, fullDocMask = false, captureOptions = {}) {
     if (!hasActiveDocument()) {
-        throw new Error("No active document");
+        throw new Error('没有打开的 Photoshop 文档。');
     }
 
-    if (!(await hasActiveSelection())) {
-        throw new Error("No active selection");
+    // batchPlay({synchronousExecution:false}) awaited inside executeAsModal never
+    // resolves, so the panel's busy lock stays on forever. Read the selection
+    // before entering the modal, and let the caller pass bounds it already has.
+    let bounds = normalizeBounds(captureOptions.selectionBounds);
+    if (!bounds) {
+        if (!(await hasActiveSelection())) {
+            throw new Error('没有活动选区。请先用框选或套索圈出区域。');
+        }
+        bounds = await getSelectionBounds();
     }
 
-    // Wrap in executeAsModal for imaging API operations
     return await core.executeAsModal(async (executionContext) => {
         const doc = app.activeDocument;
         const activeLayer = doc.activeLayers[0];
-
-
-        // Get selection bounds
-        const bounds = await getSelectionBounds();
-
-        // Get document dimensions
         const docWidth = doc.width;
         const docHeight = doc.height;
 
@@ -1663,6 +1684,7 @@ module.exports = {
     hasActiveDocument,
     hasActiveSelection,
     getSelectionBounds,
+    normalizeBounds,
     captureSelection,
     imageDataToDataURL,
     placeBack,

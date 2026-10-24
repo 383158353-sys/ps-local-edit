@@ -50,7 +50,9 @@ async function undoOptimization(){
 async function saveCurrent(){const record=queue?.jobs.find(j=>j.id===selectedJobId);if(!record)return;record.prompt=$('prompt').value;record.model=$('model').value||record.model;record.quality=$('quality').value||'auto';record.ratio=$('output-size').value||'original';record.count=Number($('count').value)||1;record.hasSelection=Boolean(capture&&sourceImage);if(capture&&sourceImage){await snapshot(record.captureRef);record.captureWidth=capture.bounds.width;record.captureHeight=capture.bounds.height;}else await snapshotReferences(record.captureRef||record.id);queue.save();}
 async function newDraft(){voice.cancel();cancelOptimization();clearOptimizeUndo();await saveCurrent();const number=Math.max(0,...queue.jobs.map(j=>j.number||0))+1,id=nextLocalId();queue.jobs.unshift({id,captureRef:id,title:'局部改图 '+number,number,createdAt:Date.now(),state:'draft',tasks:[],prompt:'',count:1,hasSelection:false});selectedJobId=id;capture=null;sourceImage=null;references=[];$('prompt').value='';promptEditor?.resize();queue.save();show('selection-gate',true);navigatePage('edit');syncInputs();status('可读取选区做局部改图，也可直接上传图片或输入提示词生成。');}
 const fs = storage.localFileSystem;
-let capture = null, reference = null, busy = false, initialized = false;
+let capture = null, reference = null, busy = false, busyEpoch = 0, busyTimer = null, selectionEpoch = 0, initialized = false;
+function busyTimeoutMs(){const override=typeof globalThis!=='undefined'?Number(globalThis.__lk888BusyTimeoutMs):NaN;return override>0?override:45000;}
+function withTimeout(promise,ms,message){let timer;const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(message)),ms);});return Promise.race([promise,timeout]).finally(()=>clearTimeout(timer));}
 let job = null;
 let pauseRequested=false, modelList=MODELS.slice(),modelStore=null;
 function rebuildModels(){const d=modelStore?modelStore.dropdown().models:MODELS.filter(m=>m.id!=="custom");modelList=[...d,MODELS.find(m=>m.id==="custom")];}
@@ -58,10 +60,10 @@ function modelsStatus(msg,err){const n=$('models-status');if(n){n.textContent=ms
 function renderSavedModels(){if(!modelStore)return;renderManager({root:$("saved-models"),store:modelStore,client,current:$("model").value,status:modelsStatus,onChange:()=>{rebuildModels();renderModels();}});}
 function renderModels(){const node=$('model');if(!document.createElement)return;const selected=node.value;node.innerHTML='';const menu=document.createElement('sp-menu');menu.setAttribute('slot','options');modelList.forEach(model=>{const item=document.createElement('sp-menu-item');item.setAttribute('value',model.id);item.textContent=shortModelName(model);item.title=model.label||model.id;if(model.id===selected)item.setAttribute('selected','');item.addEventListener('click',()=>{selectModel(node,modelList,model.id);renderSavedModels();});menu.appendChild(item);});node.appendChild(menu);selectModel(node,modelList,modelList.some(m=>m.id===selected)?selected:(modelList[0]||{}).id);renderSavedModels();}
 async function syncImageModelsFromPlatform(){const items=await (await client()).models();const r=modelStore.syncFromPlatform(items);rebuildModels();renderModels();const ticked=modelStore.visible().filter(m=>modelStore.isTicked(m.id)).length;return {...r,ticked,all:items.length};}
-function addModel(id){const value=String(id||'').trim();if(!/^[A-Za-z0-9][A-Za-z0-9._:/-]{1,119}$/.test(value))throw new Error('模型 ID 请填写 2 至 120 个字母、数字或 . _ : / -。');modelStore.add({id:value,label:value},{tick:true});rebuildModels();renderModels();$('custom-model').value='';localStorage.removeItem('lk888-custom-model');modelsStatus('已添加 '+value+'，点它的 – 测试。');}
+function addModel(id){const value=String(id||'').trim();if(!/^[A-Za-z0-9][A-Za-z0-9._:/-]{1,119}$/.test(value))throw new Error('模型 ID 请填写 2 至 120 个字母、数字或 . _ : / -。');modelStore.add({id:value,label:value},{tick:true});rebuildModels();$('model').value=value;renderModels();$('custom-model').value='';localStorage.removeItem('lk888-custom-model');modelsStatus('已添加 '+value+'，点它的 – 测试。');}
 let references = [], sourceImage = null, settingsOpen = false, referenceDrag = null;
 const activeSubmissions = new Set();
-let annotationTarget=null,annotationPollToken=0;
+let annotationTarget=null,annotationPollToken=0,dropPollToken=0;
 function syncInputs(){
  const preview=$('preview'),size=$('selection-size'),container=$('reference-thumbs');
  if(sourceImage){preview.src=sourceImage;preview.style.display='block';size.textContent=capture?.bounds?capture.bounds.width+' × '+capture.bounds.height:'选区参考图';}
@@ -74,7 +76,7 @@ function syncInputs(){
   const badge=document.createElement('span');badge.className='badge';badge.textContent=String(index+(sourceImage?2:1));tile.appendChild(badge);
   const img=document.createElement('img');img.src=ref.data;img.alt=ref.name||'参考图';img.draggable=false;img.title='点击标注参考图';img.onclick=()=>openAnnotation(index);tile.appendChild(img);
   const name=document.createElement('span');name.className='hint';name.textContent=ref.name||'参考图';tile.appendChild(name);
-  const remove=document.createElement('span');remove.className='remove-reference';remove.textContent='×';remove.title='移除参考图';remove.setAttribute('role','button');remove.setAttribute('tabindex','0');remove.setAttribute('aria-label','移除参考图 '+(ref.name||index+1));remove.onclick=()=>{if(busy)return;references.splice(index,1);syncInputs();saveCurrent().catch(error=>status(error.message,true));};remove.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();remove.onclick();}};tile.appendChild(remove);
+  const remove=document.createElement('span');remove.className='remove-reference';remove.textContent='×';remove.title='移除参考图';remove.setAttribute('role','button');remove.setAttribute('tabindex','0');remove.setAttribute('aria-label','移除参考图 '+(ref.name||index+1));remove.onclick=()=>{if(busy){status('正在处理…',true);return;}references.splice(index,1);syncInputs();saveCurrent().catch(error=>status(error.message,true));};remove.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();remove.onclick();}};tile.appendChild(remove);
   const annotate=document.createElement('span');annotate.className='annotate-reference';annotate.textContent='✎';annotate.title='标注参考图';annotate.setAttribute('role','button');annotate.setAttribute('tabindex','0');annotate.setAttribute('aria-label','标注参考图');annotate.onclick=()=>openAnnotation(index);annotate.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openAnnotation(index);}};tile.appendChild(annotate);
   tile.addEventListener('mousedown',event=>{if(busy||event.button!==0||event.target===remove||event.target===annotate)return;referenceDrag={index,jobId:selectedJobId,x:event.clientX,y:event.clientY,moved:false};event.preventDefault();});
   container.appendChild(tile);
@@ -82,7 +84,7 @@ function syncInputs(){
  show('clear-reference',references.length>0);
 }
 async function openAnnotation(index){
- if(busy)return;
+ if(busy){status('正在处理…',true);return;}
  const data=index===null?sourceImage:references[index]?.data;
  if(!data){status('请先读取选区或添加参考图。',true);return;}
  const token=++annotationPollToken;
@@ -130,7 +132,8 @@ function archiveCompleted(){if(job && job.source && job.state!=='uncertain'){loc
 
 function show(id, visible, display = "block") { const node = $(id),target=visible?display:"none";if(node.hidden!==!visible)node.hidden=!visible;if(node.style && node.style.display!==target)node.style.display=target; }
 const $ = id => document.getElementById(id);
-function status(message, error = false) { $('status').textContent = message; $('status').className = error ? 'error' : ''; }
+function scrubVoiceCopy(message){const text=String(message||'');if(!text||['starting','listening','stopping'].includes(voice.phase))return text;if(/语音/.test(text)&&/会话已结束|语音服务|请重新开始/.test(text))return '本机助手未开启，已改用原图直接提交。';return text;}
+function status(message, error = false) { $('status').textContent = scrubVoiceCopy(message); $('status').className = error ? 'error' : ''; }
 function matchesTaskDocument(doc, region){
  if(!doc||!region?.context)return false;
  const context=region.context;
@@ -164,11 +167,39 @@ async function key() {
   try { const value = await storage.secureStorage.getItem('lk888-key'); return String.fromCharCode(...value); }
   catch (_) { throw new Error('请在设置中填写并保存 API Key。'); }
 }
-async function client() { const api=new MediaClient(await key());api.prepareImages=async images=>{const result=await voice.request('/images/prepare','POST',{images});if(!Array.isArray(result.images)||result.images.length!==images.length)throw new Error('图片预处理返回无效。');return result.images;};return api; }
+async function client() { const api=new MediaClient(await key());api.prepareImages=async images=>{try{const result=await voice.request('/images/prepare','POST',{images});if(!Array.isArray(result.images)||result.images.length!==images.length){const invalid=new Error('图片预处理返回无效，已改用原图直接提交。');invalid.prepareSkipped=true;throw invalid;}return result.images;}catch(error){if(error&&error.prepareSkipped)throw error;const skipped=new Error('本机助手未开启，已改用原图直接提交。');skipped.prepareSkipped=true;throw skipped;}};return api; }
 async function withBusy(fn) {
-  if (busy) return; busy = true; refresh();
-  try { await fn(); } catch (error) { status(error.message || '操作失败，请检查设置后重试。', true); }
-  finally { busy = false; refresh(); }
+  if (busy) { status('正在处理…', true); return; }
+  const epoch = ++busyEpoch;
+  busy = true;
+  refresh();
+  clearTimeout(busyTimer);
+  let timedOut = false;
+  const timeout = new Promise(resolve => {
+    busyTimer = setTimeout(() => {
+      if (epoch !== busyEpoch) { resolve(); return; }
+      timedOut = true;
+      busy = false;
+      ++busyEpoch;
+      clearTimeout(busyTimer);
+      busyTimer = null;
+      try { refresh(); } catch (_) {}
+      status('操作超时，已解除锁定。请再试一次。', true);
+      resolve();
+    }, busyTimeoutMs());
+  });
+  const work = Promise.resolve().then(fn).then(() => 'done', error => {
+    if (epoch !== busyEpoch) return 'ignored';
+    throw error;
+  });
+  try {
+    await Promise.race([work, timeout]);
+  } catch (error) {
+    if (epoch === busyEpoch) status(error.message || '操作失败，请检查设置后重试。', true);
+  } finally {
+    clearTimeout(busyTimer);
+    if (epoch === busyEpoch && !timedOut) { busy = false; refresh(); }
+  }
 }
 async function downloadUncached(source) {
   if (source.startsWith('data:image/')) return { buffer: fileUtils.base64ToArrayBuffer(source.split(',')[1]), ext: source.includes('image/jpeg') ? 'jpg' : source.includes('image/webp') ? 'webp' : 'png' };
@@ -228,8 +259,9 @@ function renderTasks(){
   root.appendChild(list);
  }
  const record=queue.jobs.find(j=>j.id===selectedJobId);if(!record)return;
- const notice=(message,error=false)=>{const p=document.createElement('p');p.className='task-message'+(error?' task-error':'');p.textContent=message;root.appendChild(p);};
+ const notice=(message,error=false)=>{const text=scrubVoiceCopy(message);if(!text)return;const p=document.createElement('p');p.className='task-message'+(error?' task-error':'');p.textContent=text;root.appendChild(p);};
  if(record.state==='submitting'||record.tasks?.some(t=>t.state==='running'))notice((record.phase||'生成中')+'，可继续操作；完成后回到历史查看。');
+ if(record.prepareNote)notice(record.prepareNote,false);
  if(record.error)notice(record.error,true);
  let total=0;
  (record.tasks||[]).forEach(task=>{
@@ -239,15 +271,8 @@ function renderTasks(){
    const badge=document.createElement('span');badge.className='task-badge';badge.textContent=String(total);card.appendChild(badge);
    const img=document.createElement('img');img.src=result.source;img.alt='生成结果 '+total;
    const caption=document.createElement('span');caption.className='task-caption';caption.textContent=result.imported?'已添加图层，可再次添加':record.hasSelection===false?'点击图片添加完整图层':'点击图片添加图层';
-   img.onload=()=>{caption.textContent=img.naturalWidth+' × '+img.naturalHeight;caption.title=result.imported?'已添加，可再次添加':'点击图片添加图层';if(index===0)download(result.source).catch(()=>{});};
-   let previewRetried=false;
-   img.onerror=async()=>{
-    if(!previewRetried&&/^https:\/\//.test(result.source)){
-     previewRetried=true;
-     try{const {buffer,ext}=await download(result.source);img.src='data:image/'+(ext==='jpg'?'jpeg':ext)+';base64,'+fileUtils.arrayBufferToBase64(buffer);return;}catch(_){}
-    }
-    caption.textContent='预览加载失败，仍可点击添加图层或保存原图';
-   };
+   img.onload=()=>{caption.textContent=img.naturalWidth+' × '+img.naturalHeight;caption.title=result.imported?'已添加，可再次添加':'点击图片添加图层';};
+   img.onerror=()=>{caption.textContent='预览加载失败，仍可点击添加图层或保存原图';};
    const action={jobId:record.id,taskId:task.id,index};
    img.onclick=()=>withBusy(()=>candidateAction({...action,type:'import'}));
    caption.onclick=img.onclick;
@@ -259,7 +284,7 @@ function renderTasks(){
   });
  });
  if(total && record.state!=='submitting'&&!record.tasks.some(t=>t.state==='running'))notice(record.hasSelection===false?'生成完成，点击候选图添加完整图层，或保存原图。':'生成完成，点击候选图添加图层。');
- else if(record.state!=='submitting'&&!record.tasks?.some(t=>t.state==='running'))notice('尚无生成结果。');
+ else if(record.state!=='failed'&&record.state!=='uncertain'&&!record.error&&record.state!=='submitting'&&!record.tasks?.some(t=>t.state==='running'))notice('尚无生成结果。');
 }
 function renumberHistory(){queue.jobs.slice().reverse().forEach((record,index)=>{record.number=index+1;record.title='局部改图 '+(index+1);});}
 async function deleteCaptureFiles(records,includeSharedSelection=false){
@@ -357,10 +382,22 @@ async function snapshot(id){const folder=await fs.getDataFolder(),meta=await fol
 async function snapshotReferences(id){const folder=await fs.getDataFolder(),meta=await folder.createFile(id+'.json',{overwrite:true});await meta.write(JSON.stringify({references}));}
 async function restoreReferences(id){const folder=await fs.getDataFolder(),meta=JSON.parse(await(await folder.getEntry(id+'.json')).read());return Array.isArray(meta.references)?meta.references:[];}
 async function restoreCapture(id){const folder=await fs.getDataFolder(),meta=JSON.parse(await(await folder.getEntry(id+'.json')).read()),bytes=await(await folder.getEntry(id+'.bin')).read({format:storage.formats.binary});return {...meta,maskData:{...meta.mask,imageData:new Uint8Array(bytes)}};}
+function pixelSize(value){const raw=value&&typeof value==='object'&&'_value' in value?value._value:value;const number=Number(raw);return Number.isFinite(number)?number:null;}
+function selectionMatchesOpenDocument(doc){
+ if(!doc||!capture?.context)return false;
+ if(doc.id===capture.context.documentId)return true;
+ const width=pixelSize(doc.width),height=pixelSize(doc.height);
+ const same=width>0&&height>0&&width===pixelSize(capture.documentWidth)&&height===pixelSize(capture.documentHeight);
+ if(!same)return false;
+ capture.context={...capture.context,documentId:doc.id,documentName:doc.name||capture.context.documentName};
+ if(doc.path)capture.context.documentPath=doc.path;
+ capture.documentWidth=width;capture.documentHeight=height;
+ return true;
+}
 async function generate(){voice.cancel();
  const prompt=$('prompt').value.trim(),hasSelection=!!(capture&&sourceImage);
  if(!prompt&&!references.length)throw new Error('请添加图片或填写提示词。');
- if(hasSelection&&(!app.activeDocument||app.activeDocument.id!==capture.context.documentId))throw new Error('请读取当前文档选区。');
+ if(hasSelection&&!selectionMatchesOpenDocument(app.activeDocument))throw new Error('请读取当前文档选区。');
  const configuredRatio=$('output-size').value||'original',selection=hasSelection?capture.context.originalBounds:null;
  const ratio=configuredRatio==='original'?(selection?closestStandardAspect(selection.right-selection.left,selection.bottom-selection.top):'original'):configuredRatio;
  if(hasSelection&&capture.aspectRatio&&capture.aspectRatio!==ratio){await readSelection(ratio,true);$('prompt').value=prompt;}
@@ -374,12 +411,13 @@ async function generate(){voice.cancel();
  selectedJobId=id;activeSubmissions.add(id);syncInputs();show('selection-gate',false);navigatePage('edit');status('任务已开始提交。面板可以继续操作；提交状态会保存在历史记录中。');
  queue.submit(record,[...(hasSelection?[sourceImage]:[]),...references.map(r=>r.data)],params).then(()=>{
   activeSubmissions.delete(id);refresh();
-  if(selectedJobId===id && record.state==='failed'){status(record.error||'生成失败，未返回图片。',true);return;}
-  if(selectedJobId===id)status(record.state==='uncertain'?'提交状态不确定，请在历史记录中查询原任务。':'已提交。生成在后台继续，可新建另一处改图。',record.state==='uncertain');
+  if(selectedJobId!==id)return;
+  if(record.state==='failed'||record.state==='uncertain'){status(record.error||'生成失败，未返回图片。',true);return;}
+  status(record.prepareNote?'已提交。'+record.prepareNote:'已提交。生成在后台继续，可新建另一处改图。');
   queue.tick();
  }).catch(error=>{
-  activeSubmissions.delete(id);record.state='uncertain';record.error=error.message||'提交状态不确定';queue.save();refresh();
-  if(selectedJobId===id)status(record.error+'；请先查询原任务，避免重复提交。',true);
+  activeSubmissions.delete(id);record.state='failed';record.error=error.message||'生成提交失败。';queue.save();refresh();
+  if(selectedJobId===id)status(record.error,true);
  });
 }
 async function openHistory(id){voice.cancel();if(selectedJobId!==id){cancelOptimization();clearOptimizeUndo();await saveCurrent();}const record=queue.jobs.find(j=>j.id===id);if(!record)return;record.closed=false;historyOpen=false;clearHistoryArmed=false;selectedJobId=id;tasksUI();try{capture=record.hasSelection===false?null:await restoreCapture(record.captureRef);}catch(_){capture=null;}sourceImage=capture?.sourceImage||null;references=capture?.references||[];if(record.hasSelection===false){try{references=await restoreReferences(record.captureRef||record.id);}catch(_){references=[];}}if(!sourceImage && capture){try{const folder=await fs.getDataFolder(),meta=JSON.parse(await(await folder.getEntry('selection.json')).read());if(meta.context.documentId===capture.context.documentId && JSON.stringify(meta.bounds)===JSON.stringify(capture.bounds))sourceImage=meta.sourceImage;}catch(_){}}$('prompt').value=record.prompt;promptEditor?.resize();$('model').value=record.model;$('quality').value=record.quality||'auto';$('output-size').value=record.ratio||'original';$('count').value=String(record.count||1);show('selection-gate',false);navigatePage('edit');syncInputs();status(sourceImage?'已恢复当时的选区输入。结果完成后点击图片添加图层。':record.hasSelection===false?'已恢复图片和提示词，可继续生成；结果可添加为完整图层。':'旧记录未保存输入缩略图；提示词和结果已恢复。');}
@@ -394,21 +432,62 @@ async function candidateAction(data){const record=queue.jobs.find(j=>j.id===data
  const folder=await fs.getTemporaryFolder(),file=await folder.createFile('result-'+Date.now()+'.'+ext,{overwrite:true});await file.write(buffer,{format:storage.formats.binary});
  await ps.placeBack('editableSo',fs.createSessionToken(file),region.bounds,region.maskData,{...LOCAL_EDIT_EDGE_FEATHER,skipImageBlur:true});result.imported=true;queue.save();status('已添加此图片为独立图层；蒙版边缘轻微向选区内羽化，不会扩出原选区。');
 }
+function boundsNumber(value){const raw=value&&typeof value==='object'&&'_value' in value?value._value:value;const number=Number(raw);return Number.isFinite(number)?number:null;}
+function refitMask(mask,fromBounds,toBounds){
+ const srcW=mask.width|0,srcH=mask.height|0,dstW=toBounds.width|0,dstH=toBounds.height|0,src=mask.imageData;
+ if(!(srcW>0)||!(srcH>0)||!(dstW>0)||!(dstH>0)||!src||src.length<srcW*srcH)return mask;
+ if(srcW===dstW&&srcH===dstH)return {...mask,sourceBounds:toBounds};
+ const out=new Uint8Array(dstW*dstH);
+ const offsetX=Math.round((boundsNumber(fromBounds?.left)??toBounds.left)-toBounds.left);
+ const offsetY=Math.round((boundsNumber(fromBounds?.top)??toBounds.top)-toBounds.top);
+ for(let y=0;y<srcH;y++){
+  const dy=y+offsetY;if(dy<0||dy>=dstH)continue;
+  const srcStart=Math.max(0,-offsetX),dstStart=Math.max(0,offsetX),copyW=Math.min(srcW-srcStart,dstW-dstStart);
+  if(copyW<=0)continue;
+  out.set(src.subarray(y*srcW+srcStart,y*srcW+srcStart+copyW),dy*dstW+dstStart);
+ }
+ return {...mask,width:dstW,height:dstH,imageData:out,sourceBounds:toBounds};
+}
+function useCapturedPixels(nextCapture){
+ const imageData=nextCapture?.imageData?.imageData,actual=nextCapture?.imageData?.sourceBounds,requested=nextCapture?.bounds||{};
+ if(!imageData||!(imageData.width>0)||!(imageData.height>0))throw new Error('没有读到选区画面。请重新圈选后再点读取选区。');
+ const requestedWidth=boundsNumber(requested.width)??(boundsNumber(requested.right)!=null&&boundsNumber(requested.left)!=null?boundsNumber(requested.right)-boundsNumber(requested.left):null);
+ const requestedHeight=boundsNumber(requested.height)??(boundsNumber(requested.bottom)!=null&&boundsNumber(requested.top)!=null?boundsNumber(requested.bottom)-boundsNumber(requested.top):null);
+ const sameSize=requestedWidth!=null&&requestedHeight!=null&&Math.abs(imageData.width-requestedWidth)<=1&&Math.abs(imageData.height-requestedHeight)<=1;
+ if(!sameSize){
+  const left=Math.round(boundsNumber(actual?.left)??boundsNumber(requested.left)??0),top=Math.round(boundsNumber(actual?.top)??boundsNumber(requested.top)??0);
+  nextCapture.bounds={left,top,right:left+imageData.width,bottom:top+imageData.height,width:imageData.width,height:imageData.height};
+  if(nextCapture.maskData)nextCapture.maskData=refitMask(nextCapture.maskData,actual||requested,nextCapture.bounds);
+ }
+ return imageData;
+}
 async function readSelection(aspectOverride, preserveCurrent = false) {
-  voice.cancel();
-  if (!app.activeDocument || !app.activeDocument.selection || !app.activeDocument.selection.bounds) throw new Error('请先在 PS 用框选或套索圈出区域。');
+  const epoch=++selectionEpoch;
+  status('正在读取选区…');
+  await new Promise(resolve=>setTimeout(resolve,0));
+  if(epoch!==selectionEpoch)return;
+  try{voice.cancel();}catch(_){}
+  if(!app.activeDocument)throw new Error('请先打开 Photoshop 文档，再用框选或套索圈出区域。');
   const documentWidth = app.activeDocument.width, documentHeight = app.activeDocument.height;
-  const selectionBounds=await ps.getSelectionBounds();
+  let selectionBounds;
+  try{selectionBounds=await ps.getSelectionBounds();}
+  catch(error){
+    const message=error?.message||'';
+    if(/no active selection|没有活动选区|cannot determine selection bounds/i.test(message))throw new Error('请先在 PS 用框选或套索圈出区域。');
+    throw new Error('读取选区范围失败：'+(message||'Photoshop 没有返回选区。'));
+  }
+  if(epoch!==selectionEpoch)return;
+  if(!selectionBounds||!(selectionBounds.width>0)||!(selectionBounds.height>0))throw new Error('请先在 PS 用框选或套索圈出区域。');
   const configuredRatio=$('output-size').value||'original';
   const aspectRatio=aspectOverride||(configuredRatio==='original'?closestStandardAspect(selectionBounds.width,selectionBounds.height):configuredRatio);
-  const nextCapture = await ps.captureSelection('copyMerged', false, false, {tight:true,padding:8,aspectRatio});
+  const nextCapture = await ps.captureSelection('copyMerged', false, false, {tight:true,padding:8,aspectRatio,selectionBounds});
+  if(epoch!==selectionEpoch)return;
   nextCapture.aspectRatio=aspectRatio;
   nextCapture.aspectRatioMatched=nextCapture.aspectRatioMatched!==false;
   nextCapture.documentWidth = documentWidth; nextCapture.documentHeight = documentHeight;
-  const imageData = nextCapture.imageData.imageData;
-  const actualBounds = nextCapture.imageData.sourceBounds;
-  if (!imageData || imageData.width !== nextCapture.bounds.width || imageData.height !== nextCapture.bounds.height || (actualBounds && (actualBounds.left !== nextCapture.bounds.left || actualBounds.top !== nextCapture.bounds.top))) throw new Error('选区包含空白边界，暂时无法准确对齐。请换用图片内部的选区。');
+  const imageData = useCapturedPixels(nextCapture);
   const pixels=await imageData.getData({chunky:true});
+  if(epoch!==selectionEpoch)return;
   const encoded=pngRGBA(imageData.width,imageData.height,pixels,imageData.components);
   const image='data:image/png;base64,'+fileUtils.arrayBufferToBase64(encoded);
   // A completed task keeps its original capture for later result placement.
@@ -416,43 +495,112 @@ async function readSelection(aspectOverride, preserveCurrent = false) {
   const previousCapture=capture;
   if(!preserveCurrent && queue?.jobs.find(j=>j.id===selectedJobId)?.tasks.length){
     const keptPrompt=$('prompt').value,keptReferences=references.slice();
-    await newDraft();references=keptReferences;$('prompt').value=keptPrompt;promptEditor?.resize();
+    await newDraft();
+    if(epoch!==selectionEpoch)return;
+    references=keptReferences;$('prompt').value=keptPrompt;promptEditor?.resize();
   }
-  if (previousCapture && previousCapture.imageData && previousCapture.imageData.imageData) previousCapture.imageData.imageData.dispose();
+  if (previousCapture && previousCapture.imageData && previousCapture.imageData.imageData){try{previousCapture.imageData.imageData.dispose();}catch(_){}}
   capture=nextCapture;
-  $('preview').src = image; show('preview-box',true);
   sourceImage = image;
-  if (fs.getDataFolder) {
-    const folder = await fs.getDataFolder();
-    const meta = await folder.createFile('selection.json', {overwrite:true});
-    const mask = await folder.createFile('selection-mask.bin', {overwrite:true});
-    const bytes = capture.maskData.imageData;
-    await mask.write(bytes.buffer ? bytes.buffer.slice(bytes.byteOffset || 0, (bytes.byteOffset || 0) + bytes.byteLength) : bytes, {format:storage.formats.binary});
-  await meta.write(JSON.stringify({bounds:capture.bounds,aspectRatio:capture.aspectRatio,aspectRatioMatched:capture.aspectRatioMatched,context:capture.context,documentWidth,documentHeight,sourceImage,mask:{width:capture.maskData.width,height:capture.maskData.height,components:1,sourceBounds:capture.maskData.sourceBounds}}));
-  }
+  try{
+    if (fs.getDataFolder) {
+      const folder = await fs.getDataFolder();
+      const meta = await folder.createFile('selection.json', {overwrite:true});
+      const mask = await folder.createFile('selection-mask.bin', {overwrite:true});
+      const bytes = capture.maskData.imageData;
+      await mask.write(bytes.buffer ? bytes.buffer.slice(bytes.byteOffset || 0, (bytes.byteOffset || 0) + bytes.byteLength) : bytes, {format:storage.formats.binary});
+      await meta.write(JSON.stringify({bounds:capture.bounds,aspectRatio:capture.aspectRatio,aspectRatioMatched:capture.aspectRatioMatched,context:capture.context,documentWidth,documentHeight,sourceImage,mask:{width:capture.maskData.width,height:capture.maskData.height,components:1,sourceBounds:capture.maskData.sourceBounds}}));
+    }
+  }catch(error){status('选区画面已读取，但本机暂存失败：'+(error.message||error),true);}
+  if(epoch!==selectionEpoch)return;
   show('selection-gate', false);
+  show('preview-box',true);
+  $('preview').src = image;
   $('selection-size').textContent = imageData.width + ' × ' + imageData.height + ' · ' + aspectRatio;
-  status(capture.aspectRatioMatched?'已读取选区。参考图按最近模型比例补入上下文，回填仍由原套索蒙版限制。':'画布空间不足以使用所选模型比例，将按原选区范围生成。');
   syncInputs();
-  await saveCurrent();
+  status(capture.aspectRatioMatched?'已读取选区。参考图按最近模型比例补入上下文，回填仍由原套索蒙版限制。':'画布空间不足以使用所选模型比例，将按原选区范围生成。');
+  try{await saveCurrent();}catch(error){status('已读取选区，但保存草稿失败：'+(error.message||error),true);}
 }
-async function addFiles(files, target = null) {
-  const incoming=Array.from(files||[]);
-  if(!incoming.length)return;
+function requestSelectionRead(){
+  if(busy){status('正在处理…',true);return;}
+  status('正在读取选区…');
+  return withBusy(()=>readSelection());
+}
+async function reloadPanel(){
+  status('正在重载面板…');
+  try{await withTimeout(Promise.resolve().then(()=>saveCurrent()),3000,'保存超时');}
+  catch(error){status('保存当前内容失败，仍将重载面板：'+(error.message||error),true);}
+  try{if(selectedJobId)localStorage.setItem('lk888-reload-job-id',selectedJobId);}catch(_){}
+  if(typeof location==='undefined'||typeof location.reload!=='function'){status('当前 Photoshop 不支持面板重载。',true);return;}
+  location.reload();
+}
+function bindPress(id,handler){
+  const node=$(id);
+  if(!node||node.__lkBound)return;
+  node.__lkBound=true;
+  let pointerStamp=0;
+  const run=()=>Promise.resolve().then(handler).catch(error=>status((error&&error.message)||'操作失败，请检查设置后重试。',true));
+  node.addEventListener('pointerup',event=>{if(event&&event.button!=null&&event.button!==0)return;pointerStamp=Date.now();return run();});
+  node.addEventListener('click',()=>{if(Date.now()-pointerStamp<400)return;return run();});
+}
+function bindCriticalActions(){
+  bindPress('capture-selection',()=>requestSelectionRead());
+  bindPress('refresh-selection',()=>requestSelectionRead());
+  bindPress('reload-panel',()=>reloadPanel());
+  bindPress('generate',()=>withBusy(generate));
+}
+function imageExtension(name){
+  const base=String(name||'').split(/[\\/]/).pop();
+  const ext=base.includes('.')?base.split('.').pop().toLowerCase():'';
+  if(['png','jpg','jpeg','webp'].includes(ext))return ext==='jpeg'?'jpg':ext;
+  const type=String(name||'').toLowerCase();
+  if(type==='image/png')return 'png';
+  if(type==='image/webp')return 'webp';
+  if(type==='image/jpeg'||type==='image/jpg')return 'jpg';
+  return '';
+}
+function sniffImageExt(buffer){
+  const bytes=new Uint8Array(buffer);
+  if(bytes.length>=8&&bytes[0]===0x89&&bytes[1]===0x50&&bytes[2]===0x4E&&bytes[3]===0x47)return 'png';
+  if(bytes.length>=3&&bytes[0]===0xFF&&bytes[1]===0xD8&&bytes[2]===0xFF)return 'jpg';
+  if(bytes.length>=12&&bytes[0]===0x52&&bytes[1]===0x49&&bytes[2]===0x46&&bytes[3]===0x46&&bytes[8]===0x57&&bytes[9]===0x45&&bytes[10]===0x42&&bytes[11]===0x50)return 'webp';
+  return '';
+}
+function fileUrlToPath(url){
+  try{
+    let rest=String(url||'').trim().replace(/^file:\/\//i,'');
+    if(/^\/[A-Za-z]:[\\/]/.test(rest))rest=rest.slice(1);
+    const decoded=decodeURIComponent(rest);
+    if(/^[A-Za-z]:[\\/]/.test(decoded))return decoded.replace(/\//g,'\\');
+    if(decoded.startsWith('\\\\'))return decoded;
+    if(decoded.startsWith('//'))return decoded.replace(/\//g,'\\');
+    if(decoded&&!/^[\\/]/.test(decoded)&&decoded.includes('/'))return '\\\\'+decoded.replace(/\//g,'\\');
+  }catch(_){}
+  return '';
+}
+function windowsImagePath(value){
+  const raw=String(value||'').trim().replace(/^["']|["']$/g,'');
+  if(!raw||raw.length>1024||raw.includes('\0'))return '';
+  const candidate=/^file:\/\//i.test(raw)?fileUrlToPath(raw):raw;
+  if(!candidate||candidate.split(/[\\/]/).some(part=>part==='..'||part==='.'))return '';
+  if(!imageExtension(candidate))return '';
+  if(/^[A-Za-z]:[\\/]/.test(candidate))return candidate.replace(/\//g,'\\');
+  if(/^\\\\[^\\]+\\[^\\]+\\/.test(candidate.replace(/\//g,'\\')))return candidate.replace(/\//g,'\\');
+  return '';
+}
+function fileUrlsFor(value){
+  const raw=String(value||'').trim();
+  if(/^file:\/\//i.test(raw))return [raw];
+  const native=windowsImagePath(raw);
+  if(!native)return [];
+  const normalized=native.replace(/\\/g,'/');
+  const prefix=/^[A-Za-z]:\//.test(normalized)?'file:///':'file://';
+  const encoded=prefix+normalized.split('/').map(part=>encodeURIComponent(part)).join('/');
+  const loose=prefix+encodeURI(normalized);
+  return encoded===loose?[encoded]:[encoded,loose];
+}
+async function commitDropped(added,target,note=''){
   const replacing=target?.kind==='reference'||target?.kind==='source';
-  if(replacing&&incoming.length!==1)throw new Error('替换图片时请只拖入一张。');
-  const added=[];
-  for(const file of incoming){
-    const ext=String(file.name||'').includes('.')?String(file.name).split('.').pop().toLowerCase():String(file.type||'').split('/').pop().toLowerCase();
-    if(!['png','jpg','jpeg','webp'].includes(ext))throw new Error('请添加 PNG、JPG 或 WebP 图片。');
-    let buffer=null;
-    try{
-      buffer=typeof file.read==='function'?await file.read({format:storage.formats.binary}):typeof file.arrayBuffer==='function'?await file.arrayBuffer():null;
-      if(!buffer&&typeof FileReader!=='undefined')buffer=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('拖入的图片读取失败。'));reader.readAsArrayBuffer(file);});
-    }catch(_){throw new Error('拖入的图片无法读取。');}
-    if(!buffer||!buffer.byteLength)throw new Error('拖入的图片无法读取，请尝试点击“添加图片”。');
-    added.push({name:file.name||'拖入图片.'+ext,data:'data:image/'+(ext==='jpg'?'jpeg':ext)+';base64,'+fileUtils.arrayBufferToBase64(buffer)});
-  }
   if(target?.kind==='source'){
     if(!sourceImage||!capture)throw new Error('请先读取选区，再替换第 1 张图片。');
     sourceImage=added[0].data;
@@ -462,10 +610,106 @@ async function addFiles(files, target = null) {
   }else references.push(...added);
   syncInputs();
   await saveCurrent();
-  status(replacing?'已替换目标图片。':'已添加 '+incoming.length+' 张参考图，可在提示词中用图片编号引用。');
+  status((replacing?'已替换目标图片。':'已添加 '+added.length+' 张参考图，可在提示词中用图片编号引用。')+note);
+}
+async function addFiles(files, target = null) {
+  const incoming=Array.from(files||[]);
+  if(!incoming.length)return;
+  const replacing=target?.kind==='reference'||target?.kind==='source';
+  if(replacing&&incoming.length!==1)throw new Error('替换图片时请只拖入一张。');
+  const added=[];
+  for(const file of incoming){
+    const suffix=String(file.name||file.path||file.nativePath||'').split(/[\\/]/).pop();
+    const dot=suffix.lastIndexOf('.');
+    const declared=dot>=0?suffix.slice(dot+1).toLowerCase():'';
+    if(declared&&!['png','jpg','jpeg','webp'].includes(declared))throw new Error('请添加 PNG、JPG 或 WebP 图片。');
+    let ext=imageExtension(file.name)||imageExtension(file.path)||imageExtension(file.nativePath)||imageExtension(file.url)||imageExtension(file.type);
+    let buffer=null;
+    try{
+      buffer=typeof file.read==='function'?await file.read({format:storage.formats.binary}):typeof file.arrayBuffer==='function'?await file.arrayBuffer():null;
+      if(!buffer&&typeof FileReader!=='undefined')buffer=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('拖入的图片读取失败。'));reader.readAsArrayBuffer(file);});
+    }catch(_){throw new Error('拖入的图片无法读取。');}
+    if(!buffer||!buffer.byteLength)throw new Error('拖入的图片无法读取，请尝试点击“添加图片”。');
+    if(!ext)ext=sniffImageExt(buffer);
+    if(!ext)throw new Error('请添加 PNG、JPG 或 WebP 图片。');
+    const safe=ext==='jpeg'?'jpg':ext;
+    const base=String(file.name||String(file.path||file.nativePath||'').split(/[\\/]/).pop()||'拖入图片');
+    added.push({name:(imageExtension(base)?base:base.replace(/\.$/,'')+'.'+safe).slice(0,150),data:'data:image/'+(safe==='jpg'?'jpeg':safe)+';base64,'+fileUtils.arrayBufferToBase64(buffer)});
+  }
+  await commitDropped(added,target);
+}
+async function addReferencePayloads(items,target=null,note=''){
+  const incoming=Array.from(items||[]).filter(Boolean);
+  if(!incoming.length)throw new Error('拖入的图片无法读取。');
+  const replacing=target?.kind==='reference'||target?.kind==='source';
+  if(replacing&&incoming.length!==1)throw new Error('替换图片时请只拖入一张。');
+  const added=[];
+  for(const item of incoming){
+    if(typeof item.data!=='string'||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(item.data))throw new Error('图片格式无效，请使用 PNG、JPG 或 WebP。');
+    added.push({name:String(item.name||'拖入图片.png').slice(0,150),data:item.data});
+  }
+  await commitDropped(added,target,note);
+}
+function captureDroppedFile(file){
+  if(!file||file.isFolder||file.isDirectory)return null;
+  let pending=null,failed=null;
+  try{
+    const started=typeof file.read==='function'?file.read({format:storage.formats.binary}):typeof file.arrayBuffer==='function'?file.arrayBuffer():null;
+    if(started){pending=Promise.resolve(started);pending.catch(()=>{});}
+  }catch(error){failed=error;}
+  return {name:file.name,type:file.type,path:file.path,nativePath:file.nativePath,url:file.url,fullPath:file.fullPath,read:pending?async()=>pending:failed?async()=>{throw failed;}:typeof file.read==='function'?file.read.bind(file):undefined,arrayBuffer:pending||failed?undefined:typeof file.arrayBuffer==='function'?file.arrayBuffer.bind(file):undefined};
+}
+// Explorer clears dataTransfer when the drop handler returns, and File.arrayBuffer()
+// often throws even though the path is still on the object. Capture both before awaiting.
+function snapshotDrop(transfer){
+  const files=[],locations=[],seen=new Set();
+  let text='';
+  if(transfer&&typeof transfer.getData==='function'){
+    for(const type of ['text/uri-list','text/plain','text/html','URL','text/x-moz-url']){
+      try{const value=transfer.getData(type);if(value)text+='\n'+value;}catch(_){}
+    }
+  }
+  const remember=(value,name)=>{
+    const raw=String(value||'').trim();
+    if(!raw)return;
+    const native=windowsImagePath(raw);
+    const urls=[];
+    if(/^file:\/\//i.test(raw))urls.push(raw);
+    for(const url of fileUrlsFor(native||raw))if(!urls.includes(url))urls.push(url);
+    const key=(native||urls[0]||'').toLowerCase();
+    if(!key||seen.has(key))return;
+    seen.add(key);
+    locations.push({path:native,urls,name:name||(native?native.split('\\').pop():'')});
+  };
+  const take=file=>{
+    const captured=captureDroppedFile(file);
+    if(!captured)return;
+    files.push(captured);
+    remember(file.url,file.name);
+    remember(file.path,file.name);
+    remember(file.nativePath,file.name);
+    remember(file.fullPath,file.name);
+  };
+  if(transfer){
+    for(const file of Array.from(transfer.files||[]))take(file);
+    for(const item of Array.from(transfer.items||[])){
+      if(item.kind&&item.kind!=='file')continue;
+      try{take(typeof item.getAsFile==='function'?item.getAsFile():null);}catch(_){}
+      try{const entry=typeof item.webkitGetAsEntry==='function'?item.webkitGetAsEntry():typeof item.getAsEntry==='function'?item.getAsEntry():null;if(entry)take(entry);}catch(_){}
+    }
+    for(const entry of Array.from(transfer.uxpEntries||[]))take(entry);
+  }
+  for(const line of text.split(/\r?\n/)){
+    const trimmed=line.trim();
+    if(!trimmed||trimmed.startsWith('#'))continue;
+    const src=trimmed.match(/\b(?:src|href)=["']([^"']+)["']/i);
+    remember(src?src[1]:trimmed,'');
+  }
+  return {transfer,files,locations,text};
 }
 async function droppedFileGroups(transfer){
   const groups=[];
+  if(!transfer)return groups;
   const files=Array.from(transfer.files||[]);if(files.length)groups.push(files);
   const items=[];
   for(const item of Array.from(transfer.items||[])){
@@ -484,32 +728,146 @@ async function droppedFileGroups(transfer){
   }
   return groups;
 }
-async function addDroppedImages(transfer,target = null){
-  if(!transfer)throw new Error('拖放没有提供可读取的图片。微信图片请先另存到文件夹再拖入，或复制图片后在面板按 Ctrl+V；也可点“添加图片”。');
-  const groups=await droppedFileGroups(transfer);
-  let unreadable=false;
-  for(const files of groups){try{await addFiles(files,target);return;}catch(error){if(!/无法读取|读取失败/.test(error.message||''))throw error;unreadable=true;}}
-  let text='';
-  if(typeof transfer.getData==='function'){
-    try{text=transfer.getData('text/uri-list')||transfer.getData('text/plain')||'';}catch(_){}
+async function payloadsFromLocations(locations){
+  const payloads=[],helperPaths=[];
+  for(const location of locations){
+    let payload=null;
+    if(typeof fs.getEntryWithUrl==='function'){
+      for(const url of location.urls){
+        try{
+          const entry=await fs.getEntryWithUrl(url);
+          const buffer=typeof entry.read==='function'?await entry.read({format:storage.formats.binary}):typeof entry.arrayBuffer==='function'?await entry.arrayBuffer():null;
+          const ext=imageExtension(entry.name||location.name||location.path);
+          if(buffer&&buffer.byteLength&&ext){payload={name:entry.name||location.name||'拖入图片.'+ext,data:'data:image/'+(ext==='jpg'||ext==='jpeg'?'jpeg':ext)+';base64,'+fileUtils.arrayBufferToBase64(buffer)};break;}
+        }catch(_){}
+      }
+    }
+    if(payload)payloads.push(payload);
+    else if(location.path)helperPaths.push(location.path);
   }
-  const uri=String(text).split(/\r?\n/).find(line=>line&&!line.startsWith('#'))||'';
-  const image=uri.match(/^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/i);
-  if(image){
+  if(!helperPaths.length)return payloads;
+  const limited=helperPaths.slice(0,5);
+  try{
+    const result=await voice.request('/drop/read','POST',{paths:limited});
+    const images=Array.isArray(result?.references)?result.references:[];
+    if(!images.length&&!payloads.length)throw new Error('拖入的图片无法读取。');
+    payloads.push(...images);
+    return {payloads,truncated:helperPaths.length>5};
+  }catch(error){
+    if(payloads.length)return payloads;
+    const message=String(error&&error.message||'');
+    if(/未开启|未连接|没有这个接口|拖入服务|助手/.test(message))throw new Error('本机图片拖入服务未开启。请双击“打开局部改图插件.cmd”后重试，或复制图片后按 Ctrl+V，也可点“添加图片”。');
+    return payloads;
+  }
+}
+let dropArm=null;
+function dropHelperDown(error){return /未开启|未连接|没有这个接口|拖入服务|助手/.test(String(error&&error.message||''));}
+function missDropMessage(helperDown){return helperDown?'本机图片拖入服务未开启。可粘贴图片，或点「添加图片」。':'这次没有读到拖入的图片。请拖到面板上停一下再松开；也可粘贴图片，或点「添加图片」。';}
+function startingDropMessage(){return '拖入接图层还在启动。请再拖一次；也可粘贴图片，或点「添加图片」。';}
+// UXP's drop often carries no file. Cover as soon as the drag enters, while the
+// button is still down, so the resident catch layer can take this same drop.
+function dragPoint(event){
+  const x=Number(event&&event.screenX),y=Number(event&&event.screenY),point={};
+  if(Number.isFinite(x))point.x=x;
+  if(Number.isFinite(y))point.y=y;
+  return point;
+}
+function releaseDropOverlay(){
+  ++dropPollToken;
+  const armed=dropArm&&!dropArm.done;
+  if(dropArm)dropArm.done=true;
+  if(armed)voice.request('/drop/hide','POST').catch(()=>{});
+}
+function prewarmDropOverlay(){voice.request('/drop/arm','POST').catch(()=>{});}
+async function pollArmedDrop(arm){
+  const expires=arm.at+8000;
+  while(arm.token===dropPollToken&&!arm.done&&Date.now()<expires){
+    if(arm.expecting&&!arm.dropAt)arm.dropAt=Date.now();
+    if(arm.dropAt&&Date.now()-arm.dropAt>3500)break;
+    try{
+      const response=await voice.request('/drop/poll?id='+encodeURIComponent(arm.id));
+      if(arm.token!==dropPollToken||arm.done)return;
+      const images=Array.isArray(response?.references)?response.references:[];
+      if(images.length){
+        arm.done=true;
+        if(arm.jobId!==selectedJobId){status('拖入的图片所属编辑已切换，未加入当前参考图。',true);return;}
+        await addReferencePayloads(images,arm.target||null);
+        voice.request('/drop/hide','POST').catch(()=>{});
+        return;
+      }
+    }catch(error){
+      if(arm.token!==dropPollToken||arm.done)return;
+      if(dropHelperDown(error)){arm.failed=true;arm.helperDown=true;arm.done=true;if(arm.expecting)status(missDropMessage(true),true);return;}
+      if(/过期/.test(String(error&&error.message||''))){arm.done=true;if(arm.expecting)status(missDropMessage(false),true);return;}
+    }
+    await new Promise(resolve=>setTimeout(resolve,300));
+  }
+  if(arm.token===dropPollToken&&arm.expecting&&!arm.done){arm.done=true;status(arm.ready?missDropMessage(false):startingDropMessage(),true);voice.request('/drop/hide','POST').catch(()=>{});}
+}
+async function armDropOverlay(event){
+  if(dropArm&&!dropArm.done&&Date.now()-dropArm.at<8000&&(!dropArm.failed||Date.now()-dropArm.at<1200))return;
+  const token=++dropPollToken,jobId=selectedJobId;
+  const arm={token,at:Date.now(),jobId,id:null,failed:false,helperDown:false,done:false,expecting:false,ready:false,dropAt:0,target:null};
+  dropArm=arm;
+  try{
+    const opened=await voice.request('/drop/cover','POST',dragPoint(event));
+    if(token!==dropPollToken||arm.done)return;
+    if(!opened||!opened.id)throw new Error('无法准备拖入。');
+    arm.id=opened.id;
+    arm.ready=!!opened.ready;
+    pollArmedDrop(arm);
+  }catch(error){
+    if(token!==dropPollToken)return;
+    arm.failed=true;
+    arm.helperDown=dropHelperDown(error);
+    if(arm.expecting)status(missDropMessage(arm.helperDown),true);
+  }
+}
+function dragLooksLikeFiles(event){
+  const types=event&&event.dataTransfer&&event.dataTransfer.types;
+  if(!types)return true;
+  const list=Array.from(types).map(type=>String(type).toLowerCase());
+  if(!list.length)return true;
+  return list.some(type=>type==='files'||type.includes('file')||type==='text/uri-list'||type==='application/x-moz-file');
+}
+function unresolvedDrop(target){
+  if(dropArm&&dropArm.done)return;
+  if(dropArm){
+    dropArm.target=target||dropArm.target;
+    if(dropArm.failed)throw new Error(missDropMessage(dropArm.helperDown));
+    dropArm.expecting=true;
+    status('正在加入拖入的图片…');
+    return;
+  }
+  throw new Error(missDropMessage(false));
+}
+async function addDroppedImages(payload,target = null){
+  const snap=payload&&Array.isArray(payload.locations)?payload:snapshotDrop(payload);
+  if(!snap.transfer&&!snap.files.length&&!snap.locations.length&&!String(snap.text||'').trim()){unresolvedDrop(target);return;}
+  const groups=[];
+  if(snap.files.length)groups.push(snap.files);
+  for(const group of await droppedFileGroups(snap.transfer))groups.push(group);
+  for(const files of groups){if(!files.length)continue;try{await addFiles(files,target);releaseDropOverlay();return;}catch(error){if(!/无法读取|读取失败/.test(error.message||'')){releaseDropOverlay();throw error;}}}
+  const dataUrls=[];
+  for(const line of String(snap.text||'').split(/\r?\n/)){
+    const image=line.trim().match(/data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)/i);
+    if(!image)continue;
     const buffer=fileUtils.base64ToArrayBuffer(image[2]);
     const ext=image[1].toLowerCase()==='jpeg'?'jpg':image[1].toLowerCase();
-    await addFiles([{name:'拖入图片.'+ext,size:buffer.byteLength,arrayBuffer:async()=>buffer}],target);return;
+    dataUrls.push({name:'拖入图片.'+ext,arrayBuffer:async()=>buffer});
   }
-  if(/^file:\/\//i.test(uri)&&typeof fs.getEntryWithUrl==='function'){
-    try{await addFiles([await fs.getEntryWithUrl(uri)],target);return;}catch(error){if(!/无法读取|读取失败|permission|access|not found/i.test(error.message||''))throw error;unreadable=true;}
-  }
-  throw new Error(unreadable?'拖入的图片无法读取。请先将图片另存到文件夹，再点“添加图片”选择；微信图片也可复制后在面板按 Ctrl+V。':'该来源没有提供可读取的图片。微信图片请先另存到文件夹再拖入，或复制图片后在面板按 Ctrl+V；电脑图片也可点“添加图片”。');
+  if(dataUrls.length){await addFiles(dataUrls,target);releaseDropOverlay();return;}
+  const resolved=await payloadsFromLocations(snap.locations);
+  const payloads=Array.isArray(resolved)?resolved:(resolved&&resolved.payloads)||[];
+  if(payloads.length){await addReferencePayloads(payloads,target,!Array.isArray(resolved)&&resolved.truncated?' 一次最多 5 张，其余请再拖一次。':'');releaseDropOverlay();return;}
+  unresolvedDrop(target);
 }
 function settingsPage(open){settingsOpen=open;navigatePage(open?'settings':'edit');}
 
 async function init() {
+  bindCriticalActions();
   if (initialized) return; initialized = true;
-  if(typeof navigator!=='undefined')voice.request('/health').then(data=>console.log('Local voice helper: '+data.state+' '+(data.language||''))).catch(()=>console.log('Local voice helper unavailable; start with the local launcher.'));
+  if(typeof navigator!=='undefined'){voice.request('/health').then(data=>console.log('Local voice helper: '+data.state+' '+(data.language||''))).catch(()=>console.log('Local voice helper unavailable; start with the local launcher.'));prewarmDropOverlay();}
   try { job = JSON.parse(localStorage.getItem('lk888-job') || 'null'); } catch (_) {}
   if (job && !job.imported && fs.getDataFolder) {
     try {
@@ -529,7 +887,7 @@ async function init() {
   localStorage.removeItem('lk888-models');localStorage.removeItem('lk888-hidden-models');
   modelStore=createStore(MODELS);
   rebuildModels();renderModels();
-    try{$('key-state').textContent=(await storage.secureStorage.getItem('lk888-key'))?.length?'密钥已保存在本机；更换时粘贴新密钥再保存。':'尚未保存密钥。';}catch(_){$('key-state').textContent='尚未保存密钥。';}
+    try{const stored=await withTimeout(storage.secureStorage.getItem('lk888-key'),4000,'读取密钥超时');$('key-state').textContent=stored?.length?'密钥已保存在本机；更换时粘贴新密钥再保存。':'尚未保存密钥。';}catch(_){$('key-state').textContent='尚未保存密钥。';}
   $('pause-wait').addEventListener('click',()=>{pauseRequested=true;status('正在暂停等待，原任务会保留。');});
   $('mm-add-toggle').addEventListener('click',()=>{const b=$('mm-add-box');b.style.display=b.style.display==='none'?'flex':'none';});
   $('test-models').addEventListener('click',()=>withBusy(async()=>{await runTests(modelStore.state.selected.filter(id=>modelStore.visible().some(x=>x.id===id)),modelStore,client,modelsStatus);rebuildModels();renderModels();}));
@@ -542,11 +900,11 @@ async function init() {
    $('document-tabs').addEventListener('mousedown',onDocumentTabScrollbarMouseDown,true);
    $('document-tabs').addEventListener('scroll',onDocumentTabScroll);
    if(typeof window!=='undefined'&&window.addEventListener)window.addEventListener('resize',()=>syncDocumentTabScroll(visibleDocumentTabs()));
-   $('reload-panel').addEventListener('click',()=>withBusy(async()=>{await saveCurrent();if(typeof location==='undefined'||typeof location.reload!=='function')throw new Error('当前 Photoshop 不支持面板重载。');if(selectedJobId)localStorage.setItem('lk888-reload-job-id',selectedJobId);location.reload();}));
+   bindCriticalActions();
    $('task-preview-close').addEventListener('click',()=>{$('task-preview').style.display='none';$('task-preview-image').removeAttribute('src');});
   if(typeof setInterval!=='undefined')setInterval(()=>queue.tick(),1500);
   queue.jobs.forEach((j,i)=>{j.number ||= queue.jobs.length-i;j.title ||= '局部改图 '+j.number;});
-  queue.tick();settingsPage(false);const reloadJobId=localStorage.getItem('lk888-reload-job-id');localStorage.removeItem('lk888-reload-job-id');if(queue.jobs.length)await openHistory(queue.jobs.find(j=>j.id===reloadJobId)?.id||queue.jobs[0].id);
+  queue.tick();settingsPage(false);const reloadJobId=localStorage.getItem('lk888-reload-job-id');localStorage.removeItem('lk888-reload-job-id');if(queue.jobs.length&&!sourceImage){try{await withTimeout(openHistory(queue.jobs.find(j=>j.id===reloadJobId)?.id||queue.jobs[0].id),8000,'恢复历史超时');}catch(error){status('历史记录恢复失败：'+(error.message||error)+'。可以直接读取选区。',true);}}
   $('settings-toggle').addEventListener('click', () => settingsPage(!settingsOpen));
   promptEditor=new PromptEditor({node:$('prompt'),voiceButton:$('voice-prompt'),expandButton:$('expand-prompt'),container:$('prompt').parentElement,clipboard:typeof navigator!=='undefined'?navigator.clipboard:null,context:()=>selectedJobId,onChange:value=>{localStorage.setItem('lk888-prompt',value);if(!applyingOptimizedPrompt)clearOptimizeUndo();},onNotice:(message,error)=>{const note=$('input-notice');note.textContent=message;note.className=error?'error':'';},onVoice:kind=>{if(kind==='stop')voice.stop();else voice.start();},readImageClipboard:()=>voice.request('/clipboard'),onImage:async data=>{const match=typeof data==='string'&&data.match(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i);if(!match)throw new Error('截图格式或大小无效。');references.push({name:'截图.'+(match[1].toLowerCase()==='jpeg'?'jpg':match[1].toLowerCase()),data});syncInputs();}});
   $('prompt').addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&String(event.key).toLowerCase()==='z'&&lastPromptBeforeOptimize?.context===selectedJobId){event.preventDefault();undoOptimization().catch(error=>status(error.message||'撤销失败。',true));}});
@@ -554,8 +912,6 @@ async function init() {
   console.log('Native prompt editor ready; clipboard access: '+(typeof navigator!=='undefined' && !!navigator.clipboard));
   $('restore-result').addEventListener('click',()=>{if(job && !job.imported && !job.source){status('先处理当前任务。',true);return;}const saved=localStorage.getItem('lk888-last-result');if(!saved){status('暂无上次结果。');return;}job=JSON.parse(saved);capture=null;sourceImage=null;saveJob();refresh();status('已恢复上次结果，可点击保存结果。');});
   $('back-editor').addEventListener('click', () => settingsPage(false));
-  $('capture-selection').addEventListener('click', () => withBusy(readSelection));
-  $('refresh-selection').addEventListener('click', () => withBusy(readSelection));
   $('save-key').addEventListener('click', () => withBusy(async () => {
     const value = $('api-key').value.trim(); if (!value) throw new Error('请输入 API Key。');
     await storage.secureStorage.setItem('lk888-key', value); $('api-key').value = ''; $('key-state').textContent='密钥已保存在本机；更换时粘贴新密钥再保存。';status('密钥已保存到本机安全存储。');
@@ -565,7 +921,6 @@ async function init() {
   $('add-model').addEventListener('click',()=>{try{addModel($('custom-model').value);}catch(error){status(error.message,true);}});
   $('optimize-prompt').addEventListener('click',optimizePrompt);
   $('undo-optimize').addEventListener('click',()=>undoOptimization().catch(error=>status(error.message||'撤销失败。',true)));
-  $('generate').addEventListener('click', () => withBusy(generate));
   $('resume').addEventListener('click', () => withBusy(async () => { if (job.source) { if (capture && !job.imported) await importImage(); else status('结果已保留。点击保存结果下载图片。'); return; } await queue.tick(); }));
   $('import-result').addEventListener('click', () => withBusy(importImage));
   $('save-result').addEventListener('click', () => withBusy(async () => {
@@ -576,7 +931,7 @@ async function init() {
     if (file) { await file.write(buffer, { format: storage.formats.binary }); status('结果已保存。'); }
   }));
   $('reset-job').addEventListener('click', () => {
-    if (busy) return;
+    if (busy) { status('正在处理…', true); return; }
     if (!$('reset-confirm').checked) { status('请先在平台确认原任务，再勾选设置中的确认项。', true); return; }
     job = null; saveJob(); $('reset-confirm').checked = false; status('已结束本机任务记录。不会取消平台任务。'); refresh();
   });
@@ -602,35 +957,50 @@ async function init() {
   document.addEventListener('mousemove',moveReferenceOnPointer);
   document.addEventListener('mouseup',endReferencePointer);
   const imageRow=$('images-row'),dropzone=$('dropzone');
-  const dragEnter=event=>{event.preventDefault();dropzone.classList.add('dragging');};
-  const dragOver=event=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='copy';dropzone.classList.add('dragging');};
+  const acceptDrag=event=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='copy';dropzone.classList.add('dragging');if(dragLooksLikeFiles(event))return armDropOverlay(event);};
   const handleImageDrop=event=>{
+    const snap=snapshotDrop(event&&event.dataTransfer);
     event.preventDefault();event.stopPropagation?.();dropzone.classList.remove('dragging');
     let target=null,node=event.target;
-    while(node&&node!==imageRow){
+    for(let depth=0;node&&node!==imageRow&&depth<12;depth++){
       if(node.id==='preview-box'){target={kind:'source'};break;}
       if(Number.isInteger(node.referenceIndex)){target={kind:'reference',index:node.referenceIndex};break;}
       if(node.id==='dropzone')break;
-      node=node.parentElement;
+      const parent=node.parentElement||node.parentNode;
+      if(!parent||parent===node)break;
+      node=parent;
     }
-    return withBusy(()=>addDroppedImages(event.dataTransfer,target));
+    return withBusy(()=>addDroppedImages(snap,target));
   };
-  document.addEventListener('dragenter',dragEnter,true);
-  document.addEventListener('dragover',dragOver,true);
+  document.addEventListener('dragenter',acceptDrag,true);
+  document.addEventListener('dragover',acceptDrag,true);
   document.addEventListener('dragleave',event=>{if(!document.contains?.(event.relatedTarget))dropzone.classList.remove('dragging');},true);
-  document.addEventListener('drop',handleImageDrop,true);
-  imageRow.addEventListener('dragenter',dragEnter);
-  imageRow.addEventListener('dragover',dragOver);
+  imageRow.addEventListener('dragenter',acceptDrag);
+  imageRow.addEventListener('dragover',acceptDrag);
   imageRow.addEventListener('drop',handleImageDrop);
+  dropzone.addEventListener('dragenter',acceptDrag);
+  dropzone.addEventListener('dragover',acceptDrag);
   dropzone.addEventListener('drop',handleImageDrop);
+  // Bubble, not capture. UXP often only fills dataTransfer for the element under the cursor;
+  // a capture listener on document would see an empty drop and cancel the real target.
+  document.addEventListener('drop',handleImageDrop);
   document.addEventListener('paste',event=>{if(event.target===$('prompt'))return;const image=promptEditor.clipboardImage(event);if(!image)return;event.preventDefault();event.stopPropagation();promptEditor.addClipboardImage(image,selectedJobId).catch(error=>status(error.message,true));},true);
+  let selectionNoticeTimer=null;
   if(action && action.addNotificationListener) action.addNotificationListener(['set','select','deselect'],()=>{
-    if(busy)return;
-    try { if(app.activeDocument && app.activeDocument.selection.bounds){show('selection-gate',true);$('selection-hint').textContent='检测到选区，是否进行局部改图？';} }catch(_){}
+    clearTimeout(selectionNoticeTimer);
+    selectionNoticeTimer=setTimeout(()=>{
+      if(busy||typeof ps.hasActiveSelection!=='function')return;
+      ps.hasActiveSelection().then(active=>{
+        if(!active||busy)return;
+        show('selection-gate',true);
+        $('selection-hint').textContent='检测到选区，点击「读取选区」即可局部改图。';
+      }).catch(()=>{});
+    },250);
   }).catch(()=>{});
   if (job) status(job.imported ? '上次结果已导入，可以继续生成。' : job.taskId ? '存在未结束任务：' + job.taskId + '。请查询原任务。' : '上次提交状态不确定，请先到平台确认任务。');
   refresh();
 
 }
+bindCriticalActions();
 document.addEventListener('DOMContentLoaded', init);
 if (document.readyState === 'complete' || document.readyState === 'interactive') init();

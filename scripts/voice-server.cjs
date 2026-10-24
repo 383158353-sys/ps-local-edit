@@ -1,8 +1,10 @@
 // Loopback-only, on-demand Windows dictation. No audio or transcript is sent online.
 const http = require('node:http');
+const https = require('node:https');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const path = require('node:path');
+const fsPromises = require('node:fs/promises');
 const PORT = 17402;
 // Adobe's UXP WebView posts messages with the plugin ID as its origin. Keep
 // the local clipboard API restricted to this plugin origin (plus native calls
@@ -37,14 +39,98 @@ function readClipboard() {
 function openDropWindow(id) {
   return spawn('powershell.exe',['-NoProfile','-Sta','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',path.join(__dirname,'drop-window.ps1'),'-SessionId',id],{windowsHide:false,stdio:'ignore'});
 }
+function openDropOverlay() {
+  return spawn('powershell.exe',['-NoProfile','-Sta','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',path.join(__dirname,'drop-overlay.ps1')],{windowsHide:true,stdio:'ignore'});
+}
+function droppedImagePath(value) {
+  if (typeof value !== 'string' || value.length > 1024 || value.includes('\0')) return '';
+  if (value.split(/[\\/]/).some(part => part === '..' || part === '.')) return '';
+  const native = path.win32.normalize(value);
+  const ext = path.win32.extname(native).toLowerCase();
+  if (!['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) return '';
+  if (!path.win32.isAbsolute(native)) return '';
+  if (!/^[A-Za-z]:\\/.test(native) && !native.startsWith('\\\\')) return '';
+  return native;
+}
+function imageDataUrl(filePath, bytes) {
+  const ext = path.win32.extname(filePath).toLowerCase();
+  const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'image/png';
+  return 'data:' + mime + ';base64,' + Buffer.from(bytes).toString('base64');
+}
+async function readDroppedFile(filePath) {
+  const stat = await fsPromises.stat(filePath);
+  if (!stat.isFile() || stat.size < 1 || stat.size > 10 * 1024 * 1024) throw new Error('每张图片不超过 10MB。');
+  return fsPromises.readFile(filePath);
+}
 function openAnnotationWindow(id) {
   return spawn('powershell.exe',['-NoProfile','-Sta','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',path.join(__dirname,'annotation-window.ps1'),'-SessionId',id],{windowsHide:false,stdio:'ignore'});
 }
-function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboard, dropWindowLauncher = openDropWindow, annotationWindowLauncher = openAnnotationWindow } = {}) {
+function forwardGenerate(raw) {
+  return new Promise((resolve, reject) => {
+    let parsed;
+    try { parsed = JSON.parse(raw); }
+    catch { reject(new Error('生图请求格式无效。')); return; }
+    const key = typeof parsed.key === 'string' ? parsed.key.trim() : '';
+    const payload = parsed.payload;
+    if (!key || !payload || typeof payload !== 'object' || Array.isArray(payload)) { reject(new Error('生图请求缺少密钥或内容。')); return; }
+    const data = Buffer.from(JSON.stringify(payload));
+    const req = https.request({
+      hostname: 'api.lk888.ai', path: '/v1/media/generate', method: 'POST', timeout: 300000,
+      headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json', 'Content-Length': data.length }
+    }, res => {
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => resolve({ status: res.statusCode || 502, body: Buffer.concat(chunks).toString('utf8') || '{}' }));
+    });
+    req.on('timeout', () => { req.destroy(); reject(new Error('提交生图任务超时。请到平台确认是否已接单，勿重复生成。')); });
+    req.on('error', () => reject(new Error('提交生图任务时网络连接失败。请检查网络；若平台已接单，勿重复生成。')));
+    req.end(data);
+  });
+}
+function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboard, dropWindowLauncher = openDropWindow, overlayLauncher = openDropOverlay, annotationWindowLauncher = openAnnotationWindow, generateProxy = forwardGenerate, pathReader = readDroppedFile } = {}) {
   let active = null, readiness = { state: 'starting' };
   const sessions = new Map();
   const dropSessions = new Map();
   const annotationSessions = new Map();
+  let overlayChild = null;
+  let overlayReady = false;
+  let overlayGen = 0;
+  let overlayWaiters = [];
+  let overlayState = { action: 'idle', id: null, at: 0, x: null, y: null };
+  function ensureOverlay() {
+    if (overlayChild && overlayChild.exitCode == null && !overlayChild.killed) return overlayChild;
+    const child = overlayLauncher();
+    overlayChild = child || null;
+    overlayReady = false;
+    if (child && typeof child.on === 'function') {
+      child.on('error', () => { if (overlayChild === child) { overlayChild = null; overlayReady = false; } });
+      child.on('exit', () => { if (overlayChild === child) { overlayChild = null; overlayReady = false; } });
+    }
+    return child;
+  }
+  function overlayView() {
+    return { action: overlayState.action, id: overlayState.id, at: overlayState.at, x: overlayState.x, y: overlayState.y, gen: overlayGen, ready: overlayReady };
+  }
+  function wakeOverlay() {
+    const waiters = overlayWaiters.splice(0);
+    for (const waiter of waiters) { try { waiter(); } catch (_) {} }
+  }
+  function publishOverlay(next) {
+    overlayState = { action: 'idle', id: null, x: null, y: null, at: Date.now(), ...next };
+    overlayGen += 1;
+    wakeOverlay();
+  }
+  function idleOverlay() { publishOverlay({ action: 'idle', id: null, at: Date.now(), x: null, y: null }); }
+  function readJsonBody(request, limit, onBody) {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', chunk => { body += chunk; if (body.length > limit) request.destroy(); });
+    request.on('end', () => {
+      let parsed = {};
+      if (body) { try { parsed = JSON.parse(body); } catch (_) { parsed = null; } }
+      onBody(parsed, body);
+    });
+  }
   const probe = spawnWorker(true);
   const probeTimer = setTimeout(() => { readiness = {state:'error', message:'中文语音引擎检查超时。'}; probe.kill(); }, 15000);
   readEvents(probe, event => {
@@ -82,17 +168,68 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
       clipboardReader().then(data=>reply(200,data)).catch(error=>reply(500,{message:error.message}));
       return;
     }
+    if(url.pathname==='/drop/read'&&request.method==='POST'){
+      let body='';request.setEncoding('utf8');request.on('data',chunk=>{body+=chunk;if(body.length>64*1024)request.destroy();});
+      request.on('end',()=>{
+        Promise.resolve().then(async()=>{
+          let parsed;try{parsed=JSON.parse(body);}catch(_){throw new Error('图片无效。');}
+          const paths=parsed.paths;
+          if(!Array.isArray(paths)||paths.length<1||paths.length>5)throw new Error('图片数量无效。');
+          const references=[];
+          for(const item of paths){
+            const native=droppedImagePath(item);
+            if(!native)throw new Error('只接受本机 PNG、JPG 或 WebP 路径。');
+            let bytes;
+            try{bytes=await pathReader(native);}catch(_){throw new Error('拖入的图片无法读取。');}
+            if(!bytes||bytes.length<1||bytes.length>10*1024*1024)throw new Error('每张图片不超过 10MB。');
+            references.push({name:path.win32.basename(native).slice(0,150),data:imageDataUrl(native,bytes)});
+          }
+          reply(200,{references});
+        }).catch(error=>reply(400,{message:error.message||'图片无效。'}));
+      });
+      return;
+    }
     if(url.pathname==='/drop/open'&&request.method==='POST'){
       for(const [id,session] of dropSessions)if(Date.now()-session.createdAt>180000)dropSessions.delete(id);
       const id=randomUUID();dropSessions.set(id,{createdAt:Date.now(),references:[]});
       try{const child=dropWindowLauncher(id);child?.on?.('error',()=>dropSessions.delete(id));return reply(200,{id});}
       catch(_){dropSessions.delete(id);return reply(500,{message:'无法打开本机拖入窗口。'});}
     }
+    if(url.pathname==='/drop/arm'&&request.method==='POST'){
+      try{ensureOverlay();return reply(200,{state:overlayReady?'ready':'starting',ready:overlayReady});}
+      catch(_){return reply(500,{message:'本机图片拖入服务未开启。'});}
+    }
+    if(url.pathname==='/drop/ready'&&request.method==='POST'){overlayReady=true;return reply(200,{state:'ready',gen:overlayGen});}
+    if(url.pathname==='/drop/cover'&&request.method==='POST'){
+      readJsonBody(request, 4096, parsed => {
+        if(parsed===null)return reply(400,{message:'拖入位置无效。'});
+        for(const [id,session] of dropSessions)if(Date.now()-session.createdAt>180000)dropSessions.delete(id);
+        try{ensureOverlay();}catch(_){return reply(500,{message:'本机图片拖入服务未开启。'});}
+        const id=randomUUID();dropSessions.set(id,{createdAt:Date.now(),references:[]});
+        const x=parsed&&Number.isFinite(parsed.x)?parsed.x:null;
+        const y=parsed&&Number.isFinite(parsed.y)?parsed.y:null;
+        publishOverlay({action:'show',id,at:Date.now(),x,y});
+        return reply(200,{id,ready:overlayReady});
+      });
+      return;
+    }
+    if(url.pathname==='/drop/hide'&&request.method==='POST'){idleOverlay();return reply(200,{state:'hidden'});}
+    if(url.pathname==='/drop/overlay'&&request.method==='GET'){
+      if(overlayState.action==='show'&&Date.now()-overlayState.at>8000)idleOverlay();
+      const since=Number(url.searchParams.get('since'))||0;
+      if(url.searchParams.get('wait')!=='1'||overlayGen!==since)return reply(200,overlayView());
+      let replied=false,waiter;
+      const send=()=>{if(replied)return;replied=true;clearTimeout(timer);const index=overlayWaiters.indexOf(waiter);if(index>=0)overlayWaiters.splice(index,1);try{reply(200,overlayView());}catch(_){}};
+      const timer=setTimeout(send,250);
+      waiter=()=>{clearTimeout(timer);send();};
+      overlayWaiters.push(waiter);
+      return;
+    }
     if(url.pathname==='/drop/upload'&&request.method==='POST'){
       const session=dropSessions.get(url.searchParams.get('id'));
       if(!session||Date.now()-session.createdAt>180000)return reply(404,{message:'拖入窗口已过期，请重新打开。'});
       let body='';request.setEncoding('utf8');request.on('data',chunk=>{body+=chunk;if(body.length>72*1024*1024)request.destroy();});
-      request.on('end',()=>{try{const value=JSON.parse(body),refs=value.references;if(!Array.isArray(refs)||refs.length<1||refs.length>5)throw Error('图片数量无效。');for(const ref of refs){if(typeof ref.name!=='string'||typeof ref.data!=='string'||ref.data.length>14*1024*1024||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(ref.data))throw Error('图片格式或大小无效。');}session.references.push(...refs.map(ref=>({name:ref.name.slice(0,150),data:ref.data})));reply(200,{state:'received',count:refs.length});}catch(error){reply(400,{message:error.message||'图片无效。'});}});return;
+      request.on('end',()=>{try{const value=JSON.parse(body),refs=value.references;if(!Array.isArray(refs)||refs.length<1||refs.length>5)throw Error('图片数量无效。');for(const ref of refs){if(typeof ref.name!=='string'||typeof ref.data!=='string'||ref.data.length>14*1024*1024||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(ref.data))throw Error('图片格式或大小无效。');}session.references.push(...refs.map(ref=>({name:ref.name.slice(0,150),data:ref.data})));if(overlayState.id===url.searchParams.get('id'))idleOverlay();reply(200,{state:'received',count:refs.length});}catch(error){reply(400,{message:error.message||'图片无效。'});}});return;
     }
     if(url.pathname==='/drop/poll'&&request.method==='GET'){
       const session=dropSessions.get(url.searchParams.get('id'));
@@ -148,14 +285,35 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
       child.on('exit',()=>{clearTimeout(session.timer);clearTimeout(session.killTimer);clearTimeout(session.stopTimer);if(['starting','listening','stopping'].includes(session.state)){session.state='error';session.message='语音识别意外退出，请检查麦克风后重试。';}if(active===session)active=null;});
       return reply(200,snapshot(session,0));
     }
+    if (url.pathname === '/media/generate' && request.method === 'POST') {
+      let body = '', tooBig = false, answered = false;
+      const fail = (status, message) => { if (answered) return; answered = true; reply(status, {error:{message}}); };
+      request.setEncoding('utf8');
+      request.on('data', chunk => { body += chunk; if (body.length > 72 * 1024 * 1024) { tooBig = true; fail(413, '生图图片过大，请缩小选区或减少参考图后再试。尚未提交。'); request.destroy(); } });
+      request.on('end', () => {
+        if (tooBig) return;
+        Promise.resolve().then(() => generateProxy(body)).then(result => {
+          if (answered) return;
+          answered = true;
+          const status = Number(result && result.status) || 502;
+          const text = typeof result?.body === 'string' ? result.body : JSON.stringify(result && result.body || {});
+          response.writeHead(status, {'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...corsHeaders});
+          response.end(text);
+        }).catch(error => fail(503, error && error.message || '本机转发生图请求失败。'));
+      });
+      request.on('error', () => fail(503, '本机接收生图请求失败。尚未提交。'));
+      return;
+    }
+    if (url.pathname !== '/status' && url.pathname !== '/stop') return reply(404, {message:'本机服务没有这个接口。'});
     const session=sessions.get(url.searchParams.get('id'));
     if(!session) return reply(404,{message:'语音会话已结束，请重新开始。'});
     if(url.pathname==='/status' && request.method==='GET') return reply(200,snapshot(session,Number(url.searchParams.get('cursor'))||0));
     if(url.pathname==='/stop' && request.method==='POST') {stop(session);return reply(200,{state:session.state});}
     return reply(404,{message:'未知语音请求。'});
   });
-  server.on('close',()=>{clearTimeout(probeTimer);probe.kill();for(const session of sessions.values()){clearTimeout(session.timer);clearTimeout(session.killTimer);clearTimeout(session.stopTimer);session.child.kill();}});
+  server.ensureOverlay=ensureOverlay;
+  server.on('close',()=>{clearTimeout(probeTimer);probe.kill();overlayReady=false;wakeOverlay();if(overlayChild)overlayChild.kill();for(const session of sessions.values()){clearTimeout(session.timer);clearTimeout(session.killTimer);clearTimeout(session.stopTimer);session.child.kill();}});
   return server;
 }
-if(require.main===module){const server=createVoiceServer();server.on('error',error=>{if(error.code!=='EADDRINUSE'){console.error('本机语音服务无法启动。');process.exitCode=1;}});server.listen(PORT,'127.0.0.1');}
+if(require.main===module){const server=createVoiceServer();server.on('error',error=>{if(error.code!=='EADDRINUSE'){console.error('本机语音服务无法启动。');process.exitCode=1;}});server.listen(PORT,'127.0.0.1',()=>{try{server.ensureOverlay();}catch(_){}});}
 module.exports={createVoiceServer,PORT};
