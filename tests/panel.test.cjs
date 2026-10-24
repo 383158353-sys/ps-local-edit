@@ -5,7 +5,7 @@ const { test } = require('node:test');
 const api = require('../plugin/api');
 const {TaskQueue}=require('../plugin/task-queue');const {pngRGBA}=require('../plugin/png');
 
-function harness({ switchDocument = false, reopenSameDocument = false, reopenPathless = false, submissionFails = false, submissionMessage = '', helperDown = false, optimizerDeferred = false, noSelection = false, captureHangs = false, captureMismatch = false, captureError = '', boundsThrows = false, busyTimeoutMs = 0 } = {}) {
+function harness({ switchDocument = false, reopenSameDocument = false, reopenPathless = false, submissionFails = false, submissionMessage = '', helperDown = false, optimizerDeferred = false, noSelection = false, captureHangs = false, captureMismatch = false, captureError = '', boundsThrows = false, busyTimeoutMs = 0, entryForUrl = null, dropQueue = null } = {}) {
   const nodes = {}, local = new Map(), calls = [], writes = [], requests = [], reads = [], docEvents = {}, helperCalls=[],optimizerCalls=[],captureArgs=[];let reloads=0, imageDecodes=0,optimizerCancels=0,resolveOptimize;
   function makeNode(id='') { const node={id,value:id==='prompt'?'改成红色':id==='model'?'banana-2':'',textContent:'',hidden:false,style:{},children:[],attributes:{},className:'',classList:{add(){},remove(){}},addEventListener(event,fn){this[event]=fn;},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},append(...items){for(const item of items)this.appendChild(item);},appendChild(item){item.parentNode=this;this.children.push(item);},replaceChildren(...items){this.children=[];this.append(...items);},get parentElement(){return makeNode('parent');}};Object.defineProperty(node,'innerHTML',{get(){return '';},set(value){if(value==='')this.children=[];}});return node; }
   const document = { readyState: 'interactive', addEventListener(event,fn) {docEvents[event]=fn;}, createElement: tag=>makeNode(tag), getElementById(id) { return nodes[id] ||= makeNode(id); },querySelectorAll(){return [];} };
@@ -18,10 +18,12 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
   const capture = { bounds, maskData: mask, documentWidth:1000,documentHeight:800,context: { documentId: 12, documentName: 'sample.psd', documentPath:reopenPathless?'':'C:/project/sample.psd', originalBounds: { left: 150, top: 120, right: 350, bottom: 240 } }, imageData: { sourceBounds: bounds, imageData: { width: 300, height: 200, components:4,getData:async()=>new Uint8Array(300*200*4), dispose() {} } } };
   const ps = { getSelectionBounds:async()=>({left:150,top:120,right:350,bottom:240,width:200,height:120}),hasActiveSelection:async()=>!noSelection,captureSelection: async (...args) => { captureArgs.push(args); if (captureError) throw new Error(captureError); if (captureHangs) return new Promise(() => {}); if (captureMismatch) return {...capture, imageData:{ sourceBounds:{ left:11.5, top:7.25, right:311.5, bottom:207.25 }, imageData:capture.imageData.imageData }}; return capture; }, placeBack: async (...args) => calls.push(args),placeGeneratedAsLayer:async (...args)=>calls.push(args) };
   const dataFiles=new Map();const folder={createFile:async name=>({write:async value=>dataFiles.set(name,value)}),getEntry:async name=>{reads.push(name);return {read:async()=>dataFiles.get(name)};}};
-  const storage = { formats: { binary: 'binary' }, secureStorage: { getItem: async () => new Uint8Array(Buffer.from('test-key')) }, localFileSystem: { getDataFolder:async()=>folder,getTemporaryFolder: async () => ({ createFile: async () => ({ write: async value => writes.push(value) }) }), createSessionToken: () => 'session-token' } };
+  const storage = { formats: { binary: 'binary' }, secureStorage: { getItem: async () => new Uint8Array(Buffer.from('test-key')) }, localFileSystem: { getDataFolder:async()=>folder,getTemporaryFolder: async () => ({ createFile: async () => ({ write: async value => writes.push(value) }) }), createSessionToken: () => 'session-token', ...(entryForUrl?{getEntryWithUrl:entryForUrl}:{}) } };
   const fetch = async (url, options) => {
     if(helperDown&&String(url).includes('127.0.0.1:17402'))return {ok:false,status:404,json:async()=>({message:'语音会话已结束，请重新开始。'})};
     if(url.includes('127.0.0.1:17402/annotate/')){helperCalls.push({url,options});return {ok:true,json:async()=>url.includes('/open')?{id:'test-annotation'}:{state:'waiting'}};}
+    if(url.includes('127.0.0.1:17402/drop/read')){helperCalls.push({url,options});const body=JSON.parse(options.body||'{}');const references=(Array.isArray(body.paths)?body.paths:[]).map(item=>({name:String(item).split(/[/\\]/).pop(),data:'data:image/png;base64,YWJj'}));return {ok:true,json:async()=>({references})};}
+    if(url.includes('127.0.0.1:17402/drop/poll')){helperCalls.push({url,options});const references=dropQueue?dropQueue.shift()||[]:[{name:'拖入.png',data:'data:image/png;base64,YWJj'}];return {ok:true,json:async()=>({references})};}
     if(url.includes('127.0.0.1:17402/drop/')){helperCalls.push({url,options});return {ok:true,json:async()=>url.includes('/open')?{id:'test-drop'}:{references:[{name:'拖入.png',data:'data:image/png;base64,YWJj'}]}};}
     if (url.endsWith('/generate')) { requests.push(JSON.parse(options.body)); if (submissionMessage) return { ok:false, status:400, json:async()=>({error:{message:submissionMessage}}) }; if (submissionFails) throw new Error('connection lost'); return { ok: true, json: async () => ({ task_id: requests.length===1?'existing-task':'task-'+requests.length }) }; }
     if (switchDocument) app.activeDocument = { ...originalDoc, id: 99, path:'C:/project/other.psd' };
@@ -81,16 +83,35 @@ test('dropping UXP and browser files adds numbered reference images',async()=>{
  assert.equal(tiles[1].children[0].textContent,'2');
  assert.equal(tiles[0].children[2].textContent,'第一张.png');
  assert.equal(tiles[1].children[2].textContent,'第二张.jpg');
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/')));
  await h.nodes['capture-selection'].click();
  assert.equal(h.nodes['reference-thumbs'].children.length,2);
 });
-test('unreadable Explorer drop reports the problem without opening a second window',async()=>{
+test('an empty UXP drop opens the local drop window and adds the image it receives',async()=>{
  const h=harness();await h.ready();
- await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[],items:[]}});
- await h.ready();
- assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/')));
+ await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
+ assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/open')&&call.options.method==='POST'));
+ assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/poll?id=test-drop')));
+ assert.equal(h.nodes['reference-thumbs'].children.length,1);
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'拖入.png');
+ assert.doesNotMatch(h.nodes.status.textContent,/该来源没有提供可读取的图片|语音会话|提交状态不确定/);
+});
+test('the drop window keeps polling until the picture arrives',async()=>{
+ const queue=[[],[{name:'窗口.jpg',data:'data:image/jpeg;base64,YWJj'}]];
+ const h=harness({dropQueue:queue});await h.ready();
+ await h.nodes.dropzone.drop({preventDefault(){},stopPropagation(){},target:h.nodes.dropzone,dataTransfer:{files:[],items:[]}});
+ assert.match(h.nodes.status.textContent,/已打开本机拖入窗口/);
  assert.equal(h.nodes['reference-thumbs'].children.length,0);
- assert.match(h.nodes.status.textContent,/微信图片请先另存到文件夹再拖入.*Ctrl\+V/);
+ await new Promise(resolve=>setTimeout(resolve,700));
+ assert.equal(h.nodes['reference-thumbs'].children.length,1);
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'窗口.jpg');
+ assert.match(h.nodes.status.textContent,/已添加 1 张参考图/);
+});
+test('a panel drop outside the image row still opens the drop window',async()=>{
+ const h=harness();await h.ready();
+ await h.docEvents.drop({preventDefault(){},stopPropagation(){},target:h.nodes.status,dataTransfer:{files:[],items:[]}});
+ assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/open')));
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'拖入.png');
 });
 test('items-only and getFiles-only drops add images with missing MIME types',async()=>{
  const h=harness();await h.ready();
@@ -101,11 +122,62 @@ test('items-only and getFiles-only drops add images with missing MIME types',asy
  assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'微信另存.png');
  assert.equal(h.nodes['reference-thumbs'].children[1].children[2].textContent,'电脑图片.jpg');
 });
-test('unreadable file drop gives a concrete save-or-paste fallback',async()=>{
+test('a file UXP cannot read and that has no path opens the drop window',async()=>{
  const h=harness();await h.ready();
- await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[{name:'微信图片.png',size:1,arrayBuffer:async()=>{throw new Error('access denied');}}]}});
- assert.match(h.nodes.status.textContent,/另存到文件夹.*Ctrl\+V/);
+ await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[{name:'微信图片.png',size:1,arrayBuffer:async()=>{throw new Error('access denied');}}]}});
+ assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/open')));
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/read')));
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'拖入.png');
+ assert.doesNotMatch(h.nodes.status.textContent,/该来源没有提供可读取的图片|语音会话/);
+});
+test('Explorer file URL is captured before the drop transfer is cleared and read without the helper',async()=>{
+ let readStarted=false;
+ const urls=[];
+ const h=harness({entryForUrl:async url=>{urls.push(url);return {name:'参考.png',read:async()=>Uint8Array.from([9]).buffer};}});
+ await h.ready();
+ await h.nodes.dropzone.drop({preventDefault(){},target:h.nodes.dropzone,dataTransfer:{
+  files:[{name:'参考.png',arrayBuffer:async()=>{readStarted=true;throw new Error('access denied');}}],
+  getData(type){return !readStarted&&type==='text/uri-list'?'file:///C:/pics/%E5%8F%82%E8%80%83.png':'';}
+ }});
+ assert.equal(h.nodes['reference-thumbs'].children.length,1);
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'参考.png');
+ assert.match(decodeURIComponent(urls[0]),/参考\.png/);
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/')));
+});
+test('Explorer path is read by the local helper when UXP cannot read the dropped file',async()=>{
+ const h=harness();await h.ready();
+ const blocked=name=>async()=>{throw new Error('access denied');};
+ await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[
+  {name:'参考.jpg',path:'C:\\pics\\参考.jpg',arrayBuffer:blocked('jpg')},
+  {name:'第二张.webp',nativePath:'D:\\img\\第二张.webp',arrayBuffer:blocked('webp')}
+ ]}});
+ assert.equal(h.helperCalls.filter(call=>call.url.includes('/drop/read')).length,1);
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
+ assert.deepEqual(JSON.parse(h.helperCalls.find(call=>call.url.includes('/drop/read')).options.body).paths,['C:\\pics\\参考.jpg','D:\\img\\第二张.webp']);
+ assert.equal(h.nodes['reference-thumbs'].children.length,2);
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'参考.jpg');
+ assert.equal(h.nodes['reference-thumbs'].children[1].children[2].textContent,'第二张.webp');
+});
+test('a file UXP can read does not call the helper even if it also has a path',async()=>{
+ const h=harness({entryForUrl:async()=>{throw new Error('permission denied');}});
+ await h.ready();
+ await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[{name:'直接.png',path:'C:\\pics\\直接.png',arrayBuffer:async()=>Uint8Array.from([4]).buffer}]}});
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'直接.png');
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/')));
+});
+test('unreadable Explorer drop names a closed helper instead of a voice session',async()=>{
+ const h=harness({helperDown:true});await h.ready();
+ await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[{name:'参考.png',path:'C:\\pics\\参考.png',arrayBuffer:async()=>{throw new Error('access denied');}}]}});
  assert.equal(h.nodes['reference-thumbs'].children.length,0);
+ assert.match(h.nodes.status.textContent,/本机图片拖入服务未开启/);
+ assert.doesNotMatch(h.nodes.status.textContent,/语音会话|提交状态不确定/);
+});
+test('an empty drop with the helper closed does not show a voice session',async()=>{
+ const h=harness({helperDown:true});await h.ready();
+ await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
+ assert.equal(h.nodes['reference-thumbs'].children.length,0);
+ assert.match(h.nodes.status.textContent,/本机图片拖入服务未开启/);
+ assert.doesNotMatch(h.nodes.status.textContent,/语音会话|该来源没有提供可读取的图片|提交状态不确定/);
 });
 
 test('dropping on an occupied reference replaces only that slot; dropping on the empty slot appends',async()=>{

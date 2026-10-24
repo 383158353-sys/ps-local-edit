@@ -4,6 +4,7 @@ const https = require('node:https');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const path = require('node:path');
+const fsPromises = require('node:fs/promises');
 const PORT = 17402;
 // Adobe's UXP WebView posts messages with the plugin ID as its origin. Keep
 // the local clipboard API restricted to this plugin origin (plus native calls
@@ -38,6 +39,26 @@ function readClipboard() {
 function openDropWindow(id) {
   return spawn('powershell.exe',['-NoProfile','-Sta','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',path.join(__dirname,'drop-window.ps1'),'-SessionId',id],{windowsHide:false,stdio:'ignore'});
 }
+function droppedImagePath(value) {
+  if (typeof value !== 'string' || value.length > 1024 || value.includes('\0')) return '';
+  if (value.split(/[\\/]/).some(part => part === '..' || part === '.')) return '';
+  const native = path.win32.normalize(value);
+  const ext = path.win32.extname(native).toLowerCase();
+  if (!['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) return '';
+  if (!path.win32.isAbsolute(native)) return '';
+  if (!/^[A-Za-z]:\\/.test(native) && !native.startsWith('\\\\')) return '';
+  return native;
+}
+function imageDataUrl(filePath, bytes) {
+  const ext = path.win32.extname(filePath).toLowerCase();
+  const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'image/png';
+  return 'data:' + mime + ';base64,' + Buffer.from(bytes).toString('base64');
+}
+async function readDroppedFile(filePath) {
+  const stat = await fsPromises.stat(filePath);
+  if (!stat.isFile() || stat.size < 1 || stat.size > 10 * 1024 * 1024) throw new Error('每张图片不超过 10MB。');
+  return fsPromises.readFile(filePath);
+}
 function openAnnotationWindow(id) {
   return spawn('powershell.exe',['-NoProfile','-Sta','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',path.join(__dirname,'annotation-window.ps1'),'-SessionId',id],{windowsHide:false,stdio:'ignore'});
 }
@@ -63,7 +84,7 @@ function forwardGenerate(raw) {
     req.end(data);
   });
 }
-function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboard, dropWindowLauncher = openDropWindow, annotationWindowLauncher = openAnnotationWindow, generateProxy = forwardGenerate } = {}) {
+function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboard, dropWindowLauncher = openDropWindow, annotationWindowLauncher = openAnnotationWindow, generateProxy = forwardGenerate, pathReader = readDroppedFile } = {}) {
   let active = null, readiness = { state: 'starting' };
   const sessions = new Map();
   const dropSessions = new Map();
@@ -103,6 +124,27 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
     if (url.pathname === '/health' && request.method === 'GET') return reply(200,readiness);
     if (url.pathname === '/clipboard' && request.method === 'GET') {
       clipboardReader().then(data=>reply(200,data)).catch(error=>reply(500,{message:error.message}));
+      return;
+    }
+    if(url.pathname==='/drop/read'&&request.method==='POST'){
+      let body='';request.setEncoding('utf8');request.on('data',chunk=>{body+=chunk;if(body.length>64*1024)request.destroy();});
+      request.on('end',()=>{
+        Promise.resolve().then(async()=>{
+          let parsed;try{parsed=JSON.parse(body);}catch(_){throw new Error('图片无效。');}
+          const paths=parsed.paths;
+          if(!Array.isArray(paths)||paths.length<1||paths.length>5)throw new Error('图片数量无效。');
+          const references=[];
+          for(const item of paths){
+            const native=droppedImagePath(item);
+            if(!native)throw new Error('只接受本机 PNG、JPG 或 WebP 路径。');
+            let bytes;
+            try{bytes=await pathReader(native);}catch(_){throw new Error('拖入的图片无法读取。');}
+            if(!bytes||bytes.length<1||bytes.length>10*1024*1024)throw new Error('每张图片不超过 10MB。');
+            references.push({name:path.win32.basename(native).slice(0,150),data:imageDataUrl(native,bytes)});
+          }
+          reply(200,{references});
+        }).catch(error=>reply(400,{message:error.message||'图片无效。'}));
+      });
       return;
     }
     if(url.pathname==='/drop/open'&&request.method==='POST'){

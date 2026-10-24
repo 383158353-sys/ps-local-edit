@@ -63,7 +63,7 @@ async function syncImageModelsFromPlatform(){const items=await (await client()).
 function addModel(id){const value=String(id||'').trim();if(!/^[A-Za-z0-9][A-Za-z0-9._:/-]{1,119}$/.test(value))throw new Error('模型 ID 请填写 2 至 120 个字母、数字或 . _ : / -。');modelStore.add({id:value,label:value},{tick:true});rebuildModels();$('model').value=value;renderModels();$('custom-model').value='';localStorage.removeItem('lk888-custom-model');modelsStatus('已添加 '+value+'，点它的 – 测试。');}
 let references = [], sourceImage = null, settingsOpen = false, referenceDrag = null;
 const activeSubmissions = new Set();
-let annotationTarget=null,annotationPollToken=0;
+let annotationTarget=null,annotationPollToken=0,dropPollToken=0;
 function syncInputs(){
  const preview=$('preview'),size=$('selection-size'),container=$('reference-thumbs');
  if(sourceImage){preview.src=sourceImage;preview.style.display='block';size.textContent=capture?.bounds?capture.bounds.width+' × '+capture.bounds.height:'选区参考图';}
@@ -549,6 +549,56 @@ function bindCriticalActions(){
   bindPress('reload-panel',()=>reloadPanel());
   bindPress('generate',()=>withBusy(generate));
 }
+function imageExtension(name){
+  const ext=String(name||'').split(/[\\/]/).pop().split('.').pop().toLowerCase();
+  return ['png','jpg','jpeg','webp'].includes(ext)?ext:'';
+}
+function fileUrlToPath(url){
+  try{
+    let rest=String(url||'').trim().replace(/^file:\/\//i,'');
+    if(/^\/[A-Za-z]:[\\/]/.test(rest))rest=rest.slice(1);
+    const decoded=decodeURIComponent(rest);
+    if(/^[A-Za-z]:[\\/]/.test(decoded))return decoded.replace(/\//g,'\\');
+    if(decoded.startsWith('\\\\'))return decoded;
+    if(decoded.startsWith('//'))return decoded.replace(/\//g,'\\');
+    if(decoded&&!/^[\\/]/.test(decoded)&&decoded.includes('/'))return '\\\\'+decoded.replace(/\//g,'\\');
+  }catch(_){}
+  return '';
+}
+function windowsImagePath(value){
+  const raw=String(value||'').trim().replace(/^["']|["']$/g,'');
+  if(!raw||raw.length>1024||raw.includes('\0'))return '';
+  const candidate=/^file:\/\//i.test(raw)?fileUrlToPath(raw):raw;
+  if(!candidate||candidate.split(/[\\/]/).some(part=>part==='..'||part==='.'))return '';
+  if(!imageExtension(candidate))return '';
+  if(/^[A-Za-z]:[\\/]/.test(candidate))return candidate.replace(/\//g,'\\');
+  if(/^\\\\[^\\]+\\[^\\]+\\/.test(candidate.replace(/\//g,'\\')))return candidate.replace(/\//g,'\\');
+  return '';
+}
+function fileUrlsFor(value){
+  const raw=String(value||'').trim();
+  if(/^file:\/\//i.test(raw))return [raw];
+  const native=windowsImagePath(raw);
+  if(!native)return [];
+  const normalized=native.replace(/\\/g,'/');
+  const prefix=/^[A-Za-z]:\//.test(normalized)?'file:///':'file://';
+  const encoded=prefix+normalized.split('/').map(part=>encodeURIComponent(part)).join('/');
+  const loose=prefix+encodeURI(normalized);
+  return encoded===loose?[encoded]:[encoded,loose];
+}
+async function commitDropped(added,target,note=''){
+  const replacing=target?.kind==='reference'||target?.kind==='source';
+  if(target?.kind==='source'){
+    if(!sourceImage||!capture)throw new Error('请先读取选区，再替换第 1 张图片。');
+    sourceImage=added[0].data;
+  }else if(target?.kind==='reference'){
+    if(!references[target.index])throw new Error('目标参考图已变化，请重新拖入。');
+    references[target.index]=added[0];
+  }else references.push(...added);
+  syncInputs();
+  await saveCurrent();
+  status((replacing?'已替换目标图片。':'已添加 '+added.length+' 张参考图，可在提示词中用图片编号引用。')+note);
+}
 async function addFiles(files, target = null) {
   const incoming=Array.from(files||[]);
   if(!incoming.length)return;
@@ -566,19 +616,80 @@ async function addFiles(files, target = null) {
     if(!buffer||!buffer.byteLength)throw new Error('拖入的图片无法读取，请尝试点击“添加图片”。');
     added.push({name:file.name||'拖入图片.'+ext,data:'data:image/'+(ext==='jpg'?'jpeg':ext)+';base64,'+fileUtils.arrayBufferToBase64(buffer)});
   }
-  if(target?.kind==='source'){
-    if(!sourceImage||!capture)throw new Error('请先读取选区，再替换第 1 张图片。');
-    sourceImage=added[0].data;
-  }else if(target?.kind==='reference'){
-    if(!references[target.index])throw new Error('目标参考图已变化，请重新拖入。');
-    references[target.index]=added[0];
-  }else references.push(...added);
-  syncInputs();
-  await saveCurrent();
-  status(replacing?'已替换目标图片。':'已添加 '+incoming.length+' 张参考图，可在提示词中用图片编号引用。');
+  await commitDropped(added,target);
+}
+async function addReferencePayloads(items,target=null,note=''){
+  const incoming=Array.from(items||[]).filter(Boolean);
+  if(!incoming.length)throw new Error('拖入的图片无法读取。');
+  const replacing=target?.kind==='reference'||target?.kind==='source';
+  if(replacing&&incoming.length!==1)throw new Error('替换图片时请只拖入一张。');
+  const added=[];
+  for(const item of incoming){
+    if(typeof item.data!=='string'||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(item.data))throw new Error('图片格式无效，请使用 PNG、JPG 或 WebP。');
+    added.push({name:String(item.name||'拖入图片.png').slice(0,150),data:item.data});
+  }
+  await commitDropped(added,target,note);
+}
+function captureDroppedFile(file){
+  if(!file||file.isFolder||file.isDirectory)return null;
+  let pending=null,failed=null;
+  try{
+    const started=typeof file.read==='function'?file.read({format:storage.formats.binary}):typeof file.arrayBuffer==='function'?file.arrayBuffer():null;
+    if(started){pending=Promise.resolve(started);pending.catch(()=>{});}
+  }catch(error){failed=error;}
+  return {name:file.name,type:file.type,path:file.path,nativePath:file.nativePath,url:file.url,fullPath:file.fullPath,read:pending?async()=>pending:failed?async()=>{throw failed;}:typeof file.read==='function'?file.read.bind(file):undefined,arrayBuffer:pending||failed?undefined:typeof file.arrayBuffer==='function'?file.arrayBuffer.bind(file):undefined};
+}
+// Explorer clears dataTransfer when the drop handler returns, and File.arrayBuffer()
+// often throws even though the path is still on the object. Capture both before awaiting.
+function snapshotDrop(transfer){
+  const files=[],locations=[],seen=new Set();
+  let text='';
+  if(transfer&&typeof transfer.getData==='function'){
+    for(const type of ['text/uri-list','text/plain','text/html','URL','text/x-moz-url']){
+      try{const value=transfer.getData(type);if(value)text+='\n'+value;}catch(_){}
+    }
+  }
+  const remember=(value,name)=>{
+    const raw=String(value||'').trim();
+    if(!raw)return;
+    const native=windowsImagePath(raw);
+    const urls=[];
+    if(/^file:\/\//i.test(raw))urls.push(raw);
+    for(const url of fileUrlsFor(native||raw))if(!urls.includes(url))urls.push(url);
+    const key=(native||urls[0]||'').toLowerCase();
+    if(!key||seen.has(key))return;
+    seen.add(key);
+    locations.push({path:native,urls,name:name||(native?native.split('\\').pop():'')});
+  };
+  const take=file=>{
+    const captured=captureDroppedFile(file);
+    if(!captured)return;
+    files.push(captured);
+    remember(file.url,file.name);
+    remember(file.path,file.name);
+    remember(file.nativePath,file.name);
+    remember(file.fullPath,file.name);
+  };
+  if(transfer){
+    for(const file of Array.from(transfer.files||[]))take(file);
+    for(const item of Array.from(transfer.items||[])){
+      if(item.kind&&item.kind!=='file')continue;
+      try{take(typeof item.getAsFile==='function'?item.getAsFile():null);}catch(_){}
+      try{const entry=typeof item.webkitGetAsEntry==='function'?item.webkitGetAsEntry():typeof item.getAsEntry==='function'?item.getAsEntry():null;if(entry)take(entry);}catch(_){}
+    }
+    for(const entry of Array.from(transfer.uxpEntries||[]))take(entry);
+  }
+  for(const line of text.split(/\r?\n/)){
+    const trimmed=line.trim();
+    if(!trimmed||trimmed.startsWith('#'))continue;
+    const src=trimmed.match(/\b(?:src|href)=["']([^"']+)["']/i);
+    remember(src?src[1]:trimmed,'');
+  }
+  return {transfer,files,locations,text};
 }
 async function droppedFileGroups(transfer){
   const groups=[];
+  if(!transfer)return groups;
   const files=Array.from(transfer.files||[]);if(files.length)groups.push(files);
   const items=[];
   for(const item of Array.from(transfer.items||[])){
@@ -597,26 +708,93 @@ async function droppedFileGroups(transfer){
   }
   return groups;
 }
-async function addDroppedImages(transfer,target = null){
-  if(!transfer)throw new Error('拖放没有提供可读取的图片。微信图片请先另存到文件夹再拖入，或复制图片后在面板按 Ctrl+V；也可点“添加图片”。');
-  const groups=await droppedFileGroups(transfer);
-  let unreadable=false;
-  for(const files of groups){try{await addFiles(files,target);return;}catch(error){if(!/无法读取|读取失败/.test(error.message||''))throw error;unreadable=true;}}
-  let text='';
-  if(typeof transfer.getData==='function'){
-    try{text=transfer.getData('text/uri-list')||transfer.getData('text/plain')||'';}catch(_){}
+async function payloadsFromLocations(locations){
+  const payloads=[],helperPaths=[];
+  for(const location of locations){
+    let payload=null;
+    if(typeof fs.getEntryWithUrl==='function'){
+      for(const url of location.urls){
+        try{
+          const entry=await fs.getEntryWithUrl(url);
+          const buffer=typeof entry.read==='function'?await entry.read({format:storage.formats.binary}):typeof entry.arrayBuffer==='function'?await entry.arrayBuffer():null;
+          const ext=imageExtension(entry.name||location.name||location.path);
+          if(buffer&&buffer.byteLength&&ext){payload={name:entry.name||location.name||'拖入图片.'+ext,data:'data:image/'+(ext==='jpg'||ext==='jpeg'?'jpeg':ext)+';base64,'+fileUtils.arrayBufferToBase64(buffer)};break;}
+        }catch(_){}
+      }
+    }
+    if(payload)payloads.push(payload);
+    else if(location.path)helperPaths.push(location.path);
   }
-  const uri=String(text).split(/\r?\n/).find(line=>line&&!line.startsWith('#'))||'';
-  const image=uri.match(/^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/i);
-  if(image){
+  if(!helperPaths.length)return payloads;
+  const limited=helperPaths.slice(0,5);
+  try{
+    const result=await voice.request('/drop/read','POST',{paths:limited});
+    const images=Array.isArray(result?.references)?result.references:[];
+    if(!images.length&&!payloads.length)throw new Error('拖入的图片无法读取。');
+    payloads.push(...images);
+    return {payloads,truncated:helperPaths.length>5};
+  }catch(error){
+    if(payloads.length)return payloads;
+    const message=String(error&&error.message||'');
+    if(/未开启|未连接|没有这个接口|拖入服务|助手/.test(message))throw new Error('本机图片拖入服务未开启。请双击“打开局部改图插件.cmd”后重试，或复制图片后按 Ctrl+V，也可点“添加图片”。');
+    return payloads;
+  }
+}
+async function openHelperDrop(target){
+  const token=++dropPollToken,jobId=selectedJobId;
+  let opened;
+  try{opened=await voice.request('/drop/open','POST');}
+  catch(error){
+    const message=String(error&&error.message||'');
+    if(/未开启|未连接|没有这个接口|拖入服务|助手/.test(message))throw new Error('本机图片拖入服务未开启。请双击“打开局部改图插件.cmd”后重试，或复制图片后按 Ctrl+V，也可点“添加图片”。');
+    throw error;
+  }
+  if(!opened||!opened.id)throw new Error('无法打开本机拖入窗口。');
+  status('已打开本机拖入窗口。请把 PNG、JPG 或 WebP 拖进该窗口，松手后会加入参考图。');
+  const expires=Date.now()+170000;
+  const poll=async()=>{
+    if(token!==dropPollToken)return;
+    if(Date.now()>expires){status('本机拖入窗口已关闭或超时。可再拖一次，或点“添加图片”。',true);return;}
+    try{
+      const response=await voice.request('/drop/poll?id='+encodeURIComponent(opened.id));
+      if(token!==dropPollToken)return;
+      const images=Array.isArray(response?.references)?response.references:[];
+      if(images.length){
+        if(jobId!==selectedJobId){status('拖入的图片所属编辑已切换，未加入当前参考图。',true);return;}
+        await addReferencePayloads(images,target);
+        return;
+      }
+    }catch(error){
+      if(token!==dropPollToken)return;
+      const message=String(error&&error.message||'');
+      if(/过期|已结束|未开启|未连接|拖入服务|助手/.test(message)){status('本机拖入窗口已关闭或超时。可再拖一次，或点“添加图片”。',true);return;}
+      status(message||'拖入结果读取失败。',true);
+      return;
+    }
+    setTimeout(poll,400);
+  };
+  await poll();
+}
+async function addDroppedImages(payload,target = null){
+  const snap=payload&&Array.isArray(payload.locations)?payload:snapshotDrop(payload);
+  if(!snap.transfer&&!snap.files.length&&!snap.locations.length&&!String(snap.text||'').trim()){await openHelperDrop(target);return;}
+  const groups=[];
+  if(snap.files.length)groups.push(snap.files);
+  for(const group of await droppedFileGroups(snap.transfer))groups.push(group);
+  for(const files of groups){if(!files.length)continue;try{await addFiles(files,target);return;}catch(error){if(!/无法读取|读取失败/.test(error.message||''))throw error;}}
+  const dataUrls=[];
+  for(const line of String(snap.text||'').split(/\r?\n/)){
+    const image=line.trim().match(/data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)/i);
+    if(!image)continue;
     const buffer=fileUtils.base64ToArrayBuffer(image[2]);
     const ext=image[1].toLowerCase()==='jpeg'?'jpg':image[1].toLowerCase();
-    await addFiles([{name:'拖入图片.'+ext,size:buffer.byteLength,arrayBuffer:async()=>buffer}],target);return;
+    dataUrls.push({name:'拖入图片.'+ext,arrayBuffer:async()=>buffer});
   }
-  if(/^file:\/\//i.test(uri)&&typeof fs.getEntryWithUrl==='function'){
-    try{await addFiles([await fs.getEntryWithUrl(uri)],target);return;}catch(error){if(!/无法读取|读取失败|permission|access|not found/i.test(error.message||''))throw error;unreadable=true;}
-  }
-  throw new Error(unreadable?'拖入的图片无法读取。请先将图片另存到文件夹，再点“添加图片”选择；微信图片也可复制后在面板按 Ctrl+V。':'该来源没有提供可读取的图片。微信图片请先另存到文件夹再拖入，或复制图片后在面板按 Ctrl+V；电脑图片也可点“添加图片”。');
+  if(dataUrls.length){await addFiles(dataUrls,target);return;}
+  const resolved=await payloadsFromLocations(snap.locations);
+  const payloads=Array.isArray(resolved)?resolved:(resolved&&resolved.payloads)||[];
+  if(payloads.length){await addReferencePayloads(payloads,target,!Array.isArray(resolved)&&resolved.truncated?' 一次最多 5 张，其余请再拖一次。':'');return;}
+  await openHelperDrop(target);
 }
 function settingsPage(open){settingsOpen=open;navigatePage(open?'settings':'edit');}
 
@@ -713,27 +891,33 @@ async function init() {
   document.addEventListener('mousemove',moveReferenceOnPointer);
   document.addEventListener('mouseup',endReferencePointer);
   const imageRow=$('images-row'),dropzone=$('dropzone');
-  const dragEnter=event=>{event.preventDefault();dropzone.classList.add('dragging');};
-  const dragOver=event=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='copy';dropzone.classList.add('dragging');};
+  const acceptDrag=event=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='copy';dropzone.classList.add('dragging');};
   const handleImageDrop=event=>{
+    const snap=snapshotDrop(event&&event.dataTransfer);
     event.preventDefault();event.stopPropagation?.();dropzone.classList.remove('dragging');
     let target=null,node=event.target;
-    while(node&&node!==imageRow){
+    for(let depth=0;node&&node!==imageRow&&depth<12;depth++){
       if(node.id==='preview-box'){target={kind:'source'};break;}
       if(Number.isInteger(node.referenceIndex)){target={kind:'reference',index:node.referenceIndex};break;}
       if(node.id==='dropzone')break;
-      node=node.parentElement;
+      const parent=node.parentElement||node.parentNode;
+      if(!parent||parent===node)break;
+      node=parent;
     }
-    return withBusy(()=>addDroppedImages(event.dataTransfer,target));
+    return withBusy(()=>addDroppedImages(snap,target));
   };
-  document.addEventListener('dragenter',dragEnter,true);
-  document.addEventListener('dragover',dragOver,true);
+  document.addEventListener('dragenter',acceptDrag,true);
+  document.addEventListener('dragover',acceptDrag,true);
   document.addEventListener('dragleave',event=>{if(!document.contains?.(event.relatedTarget))dropzone.classList.remove('dragging');},true);
-  document.addEventListener('drop',handleImageDrop,true);
-  imageRow.addEventListener('dragenter',dragEnter);
-  imageRow.addEventListener('dragover',dragOver);
+  imageRow.addEventListener('dragenter',acceptDrag);
+  imageRow.addEventListener('dragover',acceptDrag);
   imageRow.addEventListener('drop',handleImageDrop);
+  dropzone.addEventListener('dragenter',acceptDrag);
+  dropzone.addEventListener('dragover',acceptDrag);
   dropzone.addEventListener('drop',handleImageDrop);
+  // Bubble, not capture. UXP often only fills dataTransfer for the element under the cursor;
+  // a capture listener on document would see an empty drop and cancel the real target.
+  document.addEventListener('drop',handleImageDrop);
   document.addEventListener('paste',event=>{if(event.target===$('prompt'))return;const image=promptEditor.clipboardImage(event);if(!image)return;event.preventDefault();event.stopPropagation();promptEditor.addClipboardImage(image,selectedJobId).catch(error=>status(error.message,true));},true);
   let selectionNoticeTimer=null;
   if(action && action.addNotificationListener) action.addNotificationListener(['set','select','deselect'],()=>{

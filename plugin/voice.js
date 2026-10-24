@@ -6,7 +6,7 @@ class VoiceController {
   }
   update(state,message){this.phase=state;this.onState({state,message});}
   async request(path,method='GET',body=null) {
-    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),path.startsWith('/pick-images')?185000:path.startsWith('/clipboard')||path.startsWith('/annotate')||path.startsWith('/images/prepare')?25000:5000);
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),path.startsWith('/pick-images')?185000:path.startsWith('/clipboard')||path.startsWith('/annotate')||path.startsWith('/images/prepare')||path.startsWith('/drop')?25000:5000);
     const preparing=path.startsWith('/images/prepare');
     try {
       const response=await this.fetch('http://127.0.0.1:17402'+path,{method,signal:controller.signal,credentials:'omit',headers:{'X-PS-Local-Voice':'1',...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});
