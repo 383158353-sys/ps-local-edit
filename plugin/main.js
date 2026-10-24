@@ -550,8 +550,21 @@ function bindCriticalActions(){
   bindPress('generate',()=>withBusy(generate));
 }
 function imageExtension(name){
-  const ext=String(name||'').split(/[\\/]/).pop().split('.').pop().toLowerCase();
-  return ['png','jpg','jpeg','webp'].includes(ext)?ext:'';
+  const base=String(name||'').split(/[\\/]/).pop();
+  const ext=base.includes('.')?base.split('.').pop().toLowerCase():'';
+  if(['png','jpg','jpeg','webp'].includes(ext))return ext==='jpeg'?'jpg':ext;
+  const type=String(name||'').toLowerCase();
+  if(type==='image/png')return 'png';
+  if(type==='image/webp')return 'webp';
+  if(type==='image/jpeg'||type==='image/jpg')return 'jpg';
+  return '';
+}
+function sniffImageExt(buffer){
+  const bytes=new Uint8Array(buffer);
+  if(bytes.length>=8&&bytes[0]===0x89&&bytes[1]===0x50&&bytes[2]===0x4E&&bytes[3]===0x47)return 'png';
+  if(bytes.length>=3&&bytes[0]===0xFF&&bytes[1]===0xD8&&bytes[2]===0xFF)return 'jpg';
+  if(bytes.length>=12&&bytes[0]===0x52&&bytes[1]===0x49&&bytes[2]===0x46&&bytes[3]===0x46&&bytes[8]===0x57&&bytes[9]===0x45&&bytes[10]===0x42&&bytes[11]===0x50)return 'webp';
+  return '';
 }
 function fileUrlToPath(url){
   try{
@@ -606,15 +619,22 @@ async function addFiles(files, target = null) {
   if(replacing&&incoming.length!==1)throw new Error('替换图片时请只拖入一张。');
   const added=[];
   for(const file of incoming){
-    const ext=String(file.name||'').includes('.')?String(file.name).split('.').pop().toLowerCase():String(file.type||'').split('/').pop().toLowerCase();
-    if(!['png','jpg','jpeg','webp'].includes(ext))throw new Error('请添加 PNG、JPG 或 WebP 图片。');
+    const suffix=String(file.name||file.path||file.nativePath||'').split(/[\\/]/).pop();
+    const dot=suffix.lastIndexOf('.');
+    const declared=dot>=0?suffix.slice(dot+1).toLowerCase():'';
+    if(declared&&!['png','jpg','jpeg','webp'].includes(declared))throw new Error('请添加 PNG、JPG 或 WebP 图片。');
+    let ext=imageExtension(file.name)||imageExtension(file.path)||imageExtension(file.nativePath)||imageExtension(file.url)||imageExtension(file.type);
     let buffer=null;
     try{
       buffer=typeof file.read==='function'?await file.read({format:storage.formats.binary}):typeof file.arrayBuffer==='function'?await file.arrayBuffer():null;
       if(!buffer&&typeof FileReader!=='undefined')buffer=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('拖入的图片读取失败。'));reader.readAsArrayBuffer(file);});
     }catch(_){throw new Error('拖入的图片无法读取。');}
     if(!buffer||!buffer.byteLength)throw new Error('拖入的图片无法读取，请尝试点击“添加图片”。');
-    added.push({name:file.name||'拖入图片.'+ext,data:'data:image/'+(ext==='jpg'?'jpeg':ext)+';base64,'+fileUtils.arrayBufferToBase64(buffer)});
+    if(!ext)ext=sniffImageExt(buffer);
+    if(!ext)throw new Error('请添加 PNG、JPG 或 WebP 图片。');
+    const safe=ext==='jpeg'?'jpg':ext;
+    const base=String(file.name||String(file.path||file.nativePath||'').split(/[\\/]/).pop()||'拖入图片');
+    added.push({name:(imageExtension(base)?base:base.replace(/\.$/,'')+'.'+safe).slice(0,150),data:'data:image/'+(safe==='jpg'?'jpeg':safe)+';base64,'+fileUtils.arrayBufferToBase64(buffer)});
   }
   await commitDropped(added,target);
 }
@@ -740,48 +760,87 @@ async function payloadsFromLocations(locations){
     return payloads;
   }
 }
-async function openHelperDrop(target){
-  const token=++dropPollToken,jobId=selectedJobId;
-  let opened;
-  try{opened=await voice.request('/drop/open','POST');}
-  catch(error){
-    const message=String(error&&error.message||'');
-    if(/未开启|未连接|没有这个接口|拖入服务|助手/.test(message))throw new Error('本机图片拖入服务未开启。请双击“打开局部改图插件.cmd”后重试，或复制图片后按 Ctrl+V，也可点“添加图片”。');
-    throw error;
-  }
-  if(!opened||!opened.id)throw new Error('无法打开本机拖入窗口。');
-  status('已打开本机拖入窗口。请把 PNG、JPG 或 WebP 拖进该窗口，松手后会加入参考图。');
-  const expires=Date.now()+170000;
-  const poll=async()=>{
-    if(token!==dropPollToken)return;
-    if(Date.now()>expires){status('本机拖入窗口已关闭或超时。可再拖一次，或点“添加图片”。',true);return;}
+let dropArm=null;
+function dropHelperDown(error){return /未开启|未连接|没有这个接口|拖入服务|助手/.test(String(error&&error.message||''));}
+function missDropMessage(helperDown){return helperDown?'本机图片拖入服务未开启。可粘贴图片，或点「添加图片」。':'这次没有读到拖入的图片。可粘贴图片，或点「添加图片」。';}
+// UXP often delivers an empty DataTransfer, and the OS drag is already over
+// when the drop event runs. Cover the panel on dragenter so this same drag
+// can land on a native window that is allowed to read the file.
+function releaseDropOverlay(){
+  ++dropPollToken;
+  const armed=dropArm&&!dropArm.done;
+  if(dropArm)dropArm.done=true;
+  if(armed)voice.request('/drop/hide','POST').catch(()=>{});
+}
+function prewarmDropOverlay(){voice.request('/drop/arm','POST').catch(()=>{});}
+async function pollArmedDrop(arm){
+  const expires=arm.at+8000;
+  while(arm.token===dropPollToken&&!arm.done&&Date.now()<expires){
+    if(arm.expecting&&!arm.dropAt)arm.dropAt=Date.now();
+    if(arm.dropAt&&Date.now()-arm.dropAt>2500)break;
     try{
-      const response=await voice.request('/drop/poll?id='+encodeURIComponent(opened.id));
-      if(token!==dropPollToken)return;
+      const response=await voice.request('/drop/poll?id='+encodeURIComponent(arm.id));
+      if(arm.token!==dropPollToken||arm.done)return;
       const images=Array.isArray(response?.references)?response.references:[];
       if(images.length){
-        if(jobId!==selectedJobId){status('拖入的图片所属编辑已切换，未加入当前参考图。',true);return;}
-        await addReferencePayloads(images,target);
+        arm.done=true;
+        if(arm.jobId!==selectedJobId){status('拖入的图片所属编辑已切换，未加入当前参考图。',true);return;}
+        await addReferencePayloads(images,arm.target||null);
+        voice.request('/drop/hide','POST').catch(()=>{});
         return;
       }
     }catch(error){
-      if(token!==dropPollToken)return;
-      const message=String(error&&error.message||'');
-      if(/过期|已结束|未开启|未连接|拖入服务|助手/.test(message)){status('本机拖入窗口已关闭或超时。可再拖一次，或点“添加图片”。',true);return;}
-      status(message||'拖入结果读取失败。',true);
-      return;
+      if(arm.token!==dropPollToken||arm.done)return;
+      if(dropHelperDown(error)){arm.failed=true;arm.helperDown=true;arm.done=true;if(arm.expecting)status(missDropMessage(true),true);return;}
+      if(/过期/.test(String(error&&error.message||''))){arm.done=true;if(arm.expecting)status(missDropMessage(false),true);return;}
     }
-    setTimeout(poll,400);
-  };
-  await poll();
+    await new Promise(resolve=>setTimeout(resolve,300));
+  }
+  if(arm.token===dropPollToken&&arm.expecting&&!arm.done){arm.done=true;status(missDropMessage(false),true);voice.request('/drop/hide','POST').catch(()=>{});}
+}
+async function armDropOverlay(){
+  if(dropArm&&!dropArm.done&&Date.now()-dropArm.at<8000&&(!dropArm.failed||Date.now()-dropArm.at<1200))return;
+  const token=++dropPollToken,jobId=selectedJobId;
+  const arm={token,at:Date.now(),jobId,id:null,failed:false,helperDown:false,done:false,expecting:false,dropAt:0,target:null};
+  dropArm=arm;
+  try{
+    const opened=await voice.request('/drop/cover','POST');
+    if(token!==dropPollToken||arm.done)return;
+    if(!opened||!opened.id)throw new Error('无法准备拖入。');
+    arm.id=opened.id;
+    pollArmedDrop(arm);
+  }catch(error){
+    if(token!==dropPollToken)return;
+    arm.failed=true;
+    arm.helperDown=dropHelperDown(error);
+    if(arm.expecting)status(missDropMessage(arm.helperDown),true);
+  }
+}
+function dragLooksLikeFiles(event){
+  const types=event&&event.dataTransfer&&event.dataTransfer.types;
+  if(!types)return true;
+  const list=Array.from(types).map(type=>String(type).toLowerCase());
+  if(!list.length)return true;
+  return list.some(type=>type==='files'||type.includes('file')||type==='text/uri-list'||type==='application/x-moz-file');
+}
+function unresolvedDrop(target){
+  if(dropArm&&dropArm.done)return;
+  if(dropArm){
+    dropArm.target=target||dropArm.target;
+    if(dropArm.failed)throw new Error(missDropMessage(dropArm.helperDown));
+    dropArm.expecting=true;
+    status('正在加入拖入的图片…');
+    return;
+  }
+  throw new Error(missDropMessage(false));
 }
 async function addDroppedImages(payload,target = null){
   const snap=payload&&Array.isArray(payload.locations)?payload:snapshotDrop(payload);
-  if(!snap.transfer&&!snap.files.length&&!snap.locations.length&&!String(snap.text||'').trim()){await openHelperDrop(target);return;}
+  if(!snap.transfer&&!snap.files.length&&!snap.locations.length&&!String(snap.text||'').trim()){unresolvedDrop(target);return;}
   const groups=[];
   if(snap.files.length)groups.push(snap.files);
   for(const group of await droppedFileGroups(snap.transfer))groups.push(group);
-  for(const files of groups){if(!files.length)continue;try{await addFiles(files,target);return;}catch(error){if(!/无法读取|读取失败/.test(error.message||''))throw error;}}
+  for(const files of groups){if(!files.length)continue;try{await addFiles(files,target);releaseDropOverlay();return;}catch(error){if(!/无法读取|读取失败/.test(error.message||'')){releaseDropOverlay();throw error;}}}
   const dataUrls=[];
   for(const line of String(snap.text||'').split(/\r?\n/)){
     const image=line.trim().match(/data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)/i);
@@ -790,18 +849,18 @@ async function addDroppedImages(payload,target = null){
     const ext=image[1].toLowerCase()==='jpeg'?'jpg':image[1].toLowerCase();
     dataUrls.push({name:'拖入图片.'+ext,arrayBuffer:async()=>buffer});
   }
-  if(dataUrls.length){await addFiles(dataUrls,target);return;}
+  if(dataUrls.length){await addFiles(dataUrls,target);releaseDropOverlay();return;}
   const resolved=await payloadsFromLocations(snap.locations);
   const payloads=Array.isArray(resolved)?resolved:(resolved&&resolved.payloads)||[];
-  if(payloads.length){await addReferencePayloads(payloads,target,!Array.isArray(resolved)&&resolved.truncated?' 一次最多 5 张，其余请再拖一次。':'');return;}
-  await openHelperDrop(target);
+  if(payloads.length){await addReferencePayloads(payloads,target,!Array.isArray(resolved)&&resolved.truncated?' 一次最多 5 张，其余请再拖一次。':'');releaseDropOverlay();return;}
+  unresolvedDrop(target);
 }
 function settingsPage(open){settingsOpen=open;navigatePage(open?'settings':'edit');}
 
 async function init() {
   bindCriticalActions();
   if (initialized) return; initialized = true;
-  if(typeof navigator!=='undefined')voice.request('/health').then(data=>console.log('Local voice helper: '+data.state+' '+(data.language||''))).catch(()=>console.log('Local voice helper unavailable; start with the local launcher.'));
+  if(typeof navigator!=='undefined'){voice.request('/health').then(data=>console.log('Local voice helper: '+data.state+' '+(data.language||''))).catch(()=>console.log('Local voice helper unavailable; start with the local launcher.'));prewarmDropOverlay();}
   try { job = JSON.parse(localStorage.getItem('lk888-job') || 'null'); } catch (_) {}
   if (job && !job.imported && fs.getDataFolder) {
     try {
@@ -891,7 +950,7 @@ async function init() {
   document.addEventListener('mousemove',moveReferenceOnPointer);
   document.addEventListener('mouseup',endReferencePointer);
   const imageRow=$('images-row'),dropzone=$('dropzone');
-  const acceptDrag=event=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='copy';dropzone.classList.add('dragging');};
+  const acceptDrag=event=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='copy';dropzone.classList.add('dragging');if(dragLooksLikeFiles(event))return armDropOverlay();};
   const handleImageDrop=event=>{
     const snap=snapshotDrop(event&&event.dataTransfer);
     event.preventDefault();event.stopPropagation?.();dropzone.classList.remove('dragging');

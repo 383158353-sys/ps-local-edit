@@ -120,6 +120,30 @@ test('local drop window sends images into the panel polling queue',async()=>{
     const bad=await fetch(base+'/drop/upload?id='+opened.id,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({references:[{name:'x',data:'file:///secret'}]})});assert.equal(bad.status,400);
   }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
+test('drop cover arms the overlay and never opens the titled drop window',async()=>{
+  const windows=[];const overlays=[];
+  const server=createVoiceServer({spawnWorker:()=>{const child=fakeChild();setImmediate(()=>child.emit('exit',0));return child;},dropWindowLauncher:id=>{windows.push(id);return fakeChild();},overlayLauncher:()=>{const child=fakeChild();overlays.push(child);return child;}});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const base='http://127.0.0.1:'+server.address().port,headers={'X-PS-Local-Voice':'1'};
+  try{
+    const armed=await fetch(base+'/drop/arm',{method:'POST',headers});
+    assert.equal(armed.status,200);assert.equal(overlays.length,1);assert.equal(windows.length,0);
+    const covered=await(await fetch(base+'/drop/cover',{method:'POST',headers})).json();
+    assert.equal(overlays.length,1);assert.equal(windows.length,0);assert.ok(covered.id);
+    const shown=await(await fetch(base+'/drop/overlay',{headers})).json();
+    assert.equal(shown.action,'show');assert.equal(shown.id,covered.id);
+    const image={name:'拖入.png',data:'data:image/png;base64,YWJj'};
+    const upload=await fetch(base+'/drop/upload?id='+covered.id,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({references:[image]})});
+    assert.equal(upload.status,200);
+    assert.equal((await(await fetch(base+'/drop/overlay',{headers})).json()).action,'idle');
+    const polled=await(await fetch(base+'/drop/poll?id='+covered.id,{headers})).json();
+    assert.deepEqual(polled.references,[image]);
+    const again=await(await fetch(base+'/drop/cover',{method:'POST',headers})).json();
+    await fetch(base+'/drop/hide',{method:'POST',headers});
+    const hidden=await(await fetch(base+'/drop/overlay',{headers})).json();
+    assert.equal(hidden.action,'idle');assert.notEqual(again.id,covered.id);assert.equal(windows.length,0);
+  }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+});
 test('drop read returns local image bytes and rejects anything that is not an image path',async()=>{
   const read=[];
   const server=createVoiceServer({spawnWorker:()=>{const child=fakeChild();setImmediate(()=>child.emit('exit',0));return child;},pathReader:async file=>{read.push(file);if(file.endsWith('.jpg'))return Buffer.from('jpeg-bytes');return Buffer.from('png-bytes');}});

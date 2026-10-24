@@ -39,6 +39,9 @@ function readClipboard() {
 function openDropWindow(id) {
   return spawn('powershell.exe',['-NoProfile','-Sta','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',path.join(__dirname,'drop-window.ps1'),'-SessionId',id],{windowsHide:false,stdio:'ignore'});
 }
+function openDropOverlay() {
+  return spawn('powershell.exe',['-NoProfile','-Sta','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',path.join(__dirname,'drop-overlay.ps1')],{windowsHide:true,stdio:'ignore'});
+}
 function droppedImagePath(value) {
   if (typeof value !== 'string' || value.length > 1024 || value.includes('\0')) return '';
   if (value.split(/[\\/]/).some(part => part === '..' || part === '.')) return '';
@@ -84,11 +87,24 @@ function forwardGenerate(raw) {
     req.end(data);
   });
 }
-function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboard, dropWindowLauncher = openDropWindow, annotationWindowLauncher = openAnnotationWindow, generateProxy = forwardGenerate, pathReader = readDroppedFile } = {}) {
+function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboard, dropWindowLauncher = openDropWindow, overlayLauncher = openDropOverlay, annotationWindowLauncher = openAnnotationWindow, generateProxy = forwardGenerate, pathReader = readDroppedFile } = {}) {
   let active = null, readiness = { state: 'starting' };
   const sessions = new Map();
   const dropSessions = new Map();
   const annotationSessions = new Map();
+  let overlayChild = null;
+  let overlayState = { action: 'idle', id: null, at: 0 };
+  function ensureOverlay() {
+    if (overlayChild && overlayChild.exitCode == null && !overlayChild.killed) return overlayChild;
+    const child = overlayLauncher();
+    overlayChild = child || null;
+    if (child && typeof child.on === 'function') {
+      child.on('error', () => { if (overlayChild === child) overlayChild = null; });
+      child.on('exit', () => { if (overlayChild === child) overlayChild = null; });
+    }
+    return child;
+  }
+  function idleOverlay() { overlayState = { action: 'idle', id: null, at: Date.now() }; }
   const probe = spawnWorker(true);
   const probeTimer = setTimeout(() => { readiness = {state:'error', message:'中文语音引擎检查超时。'}; probe.kill(); }, 15000);
   readEvents(probe, event => {
@@ -153,11 +169,27 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
       try{const child=dropWindowLauncher(id);child?.on?.('error',()=>dropSessions.delete(id));return reply(200,{id});}
       catch(_){dropSessions.delete(id);return reply(500,{message:'无法打开本机拖入窗口。'});}
     }
+    if(url.pathname==='/drop/arm'&&request.method==='POST'){
+      try{ensureOverlay();return reply(200,{state:'ready'});}
+      catch(_){return reply(500,{message:'本机图片拖入服务未开启。'});}
+    }
+    if(url.pathname==='/drop/cover'&&request.method==='POST'){
+      for(const [id,session] of dropSessions)if(Date.now()-session.createdAt>180000)dropSessions.delete(id);
+      try{ensureOverlay();}catch(_){return reply(500,{message:'本机图片拖入服务未开启。'});}
+      const id=randomUUID();dropSessions.set(id,{createdAt:Date.now(),references:[]});
+      overlayState={action:'show',id,at:Date.now()};
+      return reply(200,{id});
+    }
+    if(url.pathname==='/drop/hide'&&request.method==='POST'){idleOverlay();return reply(200,{state:'hidden'});}
+    if(url.pathname==='/drop/overlay'&&request.method==='GET'){
+      if(overlayState.action==='show'&&Date.now()-overlayState.at>8000)idleOverlay();
+      return reply(200,{action:overlayState.action,id:overlayState.id,at:overlayState.at});
+    }
     if(url.pathname==='/drop/upload'&&request.method==='POST'){
       const session=dropSessions.get(url.searchParams.get('id'));
       if(!session||Date.now()-session.createdAt>180000)return reply(404,{message:'拖入窗口已过期，请重新打开。'});
       let body='';request.setEncoding('utf8');request.on('data',chunk=>{body+=chunk;if(body.length>72*1024*1024)request.destroy();});
-      request.on('end',()=>{try{const value=JSON.parse(body),refs=value.references;if(!Array.isArray(refs)||refs.length<1||refs.length>5)throw Error('图片数量无效。');for(const ref of refs){if(typeof ref.name!=='string'||typeof ref.data!=='string'||ref.data.length>14*1024*1024||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(ref.data))throw Error('图片格式或大小无效。');}session.references.push(...refs.map(ref=>({name:ref.name.slice(0,150),data:ref.data})));reply(200,{state:'received',count:refs.length});}catch(error){reply(400,{message:error.message||'图片无效。'});}});return;
+      request.on('end',()=>{try{const value=JSON.parse(body),refs=value.references;if(!Array.isArray(refs)||refs.length<1||refs.length>5)throw Error('图片数量无效。');for(const ref of refs){if(typeof ref.name!=='string'||typeof ref.data!=='string'||ref.data.length>14*1024*1024||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(ref.data))throw Error('图片格式或大小无效。');}session.references.push(...refs.map(ref=>({name:ref.name.slice(0,150),data:ref.data})));if(overlayState.id===url.searchParams.get('id'))idleOverlay();reply(200,{state:'received',count:refs.length});}catch(error){reply(400,{message:error.message||'图片无效。'});}});return;
     }
     if(url.pathname==='/drop/poll'&&request.method==='GET'){
       const session=dropSessions.get(url.searchParams.get('id'));
@@ -239,7 +271,7 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
     if(url.pathname==='/stop' && request.method==='POST') {stop(session);return reply(200,{state:session.state});}
     return reply(404,{message:'未知语音请求。'});
   });
-  server.on('close',()=>{clearTimeout(probeTimer);probe.kill();for(const session of sessions.values()){clearTimeout(session.timer);clearTimeout(session.killTimer);clearTimeout(session.stopTimer);session.child.kill();}});
+  server.on('close',()=>{clearTimeout(probeTimer);probe.kill();if(overlayChild)overlayChild.kill();for(const session of sessions.values()){clearTimeout(session.timer);clearTimeout(session.killTimer);clearTimeout(session.stopTimer);session.child.kill();}});
   return server;
 }
 if(require.main===module){const server=createVoiceServer();server.on('error',error=>{if(error.code!=='EADDRINUSE'){console.error('本机语音服务无法启动。');process.exitCode=1;}});server.listen(PORT,'127.0.0.1');}

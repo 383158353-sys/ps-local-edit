@@ -23,8 +23,10 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
     if(helperDown&&String(url).includes('127.0.0.1:17402'))return {ok:false,status:404,json:async()=>({message:'语音会话已结束，请重新开始。'})};
     if(url.includes('127.0.0.1:17402/annotate/')){helperCalls.push({url,options});return {ok:true,json:async()=>url.includes('/open')?{id:'test-annotation'}:{state:'waiting'}};}
     if(url.includes('127.0.0.1:17402/drop/read')){helperCalls.push({url,options});const body=JSON.parse(options.body||'{}');const references=(Array.isArray(body.paths)?body.paths:[]).map(item=>({name:String(item).split(/[/\\]/).pop(),data:'data:image/png;base64,YWJj'}));return {ok:true,json:async()=>({references})};}
-    if(url.includes('127.0.0.1:17402/drop/poll')){helperCalls.push({url,options});const references=dropQueue?dropQueue.shift()||[]:[{name:'拖入.png',data:'data:image/png;base64,YWJj'}];return {ok:true,json:async()=>({references})};}
-    if(url.includes('127.0.0.1:17402/drop/')){helperCalls.push({url,options});return {ok:true,json:async()=>url.includes('/open')?{id:'test-drop'}:{references:[{name:'拖入.png',data:'data:image/png;base64,YWJj'}]}};}
+    if(url.includes('127.0.0.1:17402/drop/poll')){helperCalls.push({url,options});const references=dropQueue?dropQueue.shift()||[]:[];return {ok:true,json:async()=>({references})};}
+    if(url.includes('127.0.0.1:17402/drop/arm')||url.includes('127.0.0.1:17402/drop/hide')){helperCalls.push({url,options});return {ok:true,json:async()=>({state:'ready'})};}
+    if(url.includes('127.0.0.1:17402/drop/cover')||url.includes('127.0.0.1:17402/drop/open')){helperCalls.push({url,options});return {ok:true,json:async()=>({id:'test-drop'})};}
+    if(url.includes('127.0.0.1:17402/drop/')){helperCalls.push({url,options});return {ok:true,json:async()=>({state:'ok'})};}
     if (url.endsWith('/generate')) { requests.push(JSON.parse(options.body)); if (submissionMessage) return { ok:false, status:400, json:async()=>({error:{message:submissionMessage}}) }; if (submissionFails) throw new Error('connection lost'); return { ok: true, json: async () => ({ task_id: requests.length===1?'existing-task':'task-'+requests.length }) }; }
     if (switchDocument) app.activeDocument = { ...originalDoc, id: 99, path:'C:/project/other.psd' };
     if (reopenSameDocument) app.activeDocument = { ...originalDoc, id: 99 };
@@ -87,31 +89,60 @@ test('dropping UXP and browser files adds numbered reference images',async()=>{
  await h.nodes['capture-selection'].click();
  assert.equal(h.nodes['reference-thumbs'].children.length,2);
 });
-test('an empty UXP drop opens the local drop window and adds the image it receives',async()=>{
- const h=harness();await h.ready();
+test('an empty UXP drop is caught by the overlay and does not open a dialog',async()=>{
+ const h=harness({dropQueue:[[{name:'拖入.png',data:'data:image/png;base64,YWJj'}]]});await h.ready();
+ const enter=h.nodes['images-row'].dragenter({preventDefault(){},dataTransfer:{types:['Files'],files:[],items:[]}});
  await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
- assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/open')&&call.options.method==='POST'));
+ await enter;
+ await new Promise(resolve=>setTimeout(resolve,80));
+ assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/cover')&&call.options.method==='POST'));
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
  assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/poll?id=test-drop')));
  assert.equal(h.nodes['reference-thumbs'].children.length,1);
  assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'拖入.png');
- assert.doesNotMatch(h.nodes.status.textContent,/该来源没有提供可读取的图片|语音会话|提交状态不确定/);
+ assert.doesNotMatch(h.nodes.status.textContent,/该来源没有提供可读取的图片|语音会话|提交状态不确定|局部改图 · 拖入/);
 });
-test('the drop window keeps polling until the picture arrives',async()=>{
+test('the overlay keeps polling until the same drag delivers the picture',async()=>{
  const queue=[[],[{name:'窗口.jpg',data:'data:image/jpeg;base64,YWJj'}]];
  const h=harness({dropQueue:queue});await h.ready();
+ const enter=h.nodes.dropzone.dragenter({preventDefault(){},dataTransfer:{types:['Files'],files:[],items:[]}});
  await h.nodes.dropzone.drop({preventDefault(){},stopPropagation(){},target:h.nodes.dropzone,dataTransfer:{files:[],items:[]}});
- assert.match(h.nodes.status.textContent,/已打开本机拖入窗口/);
+ await enter;
+ assert.match(h.nodes.status.textContent,/正在加入拖入的图片/);
  assert.equal(h.nodes['reference-thumbs'].children.length,0);
  await new Promise(resolve=>setTimeout(resolve,700));
  assert.equal(h.nodes['reference-thumbs'].children.length,1);
  assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'窗口.jpg');
  assert.match(h.nodes.status.textContent,/已添加 1 张参考图/);
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
 });
-test('a panel drop outside the image row still opens the drop window',async()=>{
- const h=harness();await h.ready();
+test('a panel drop outside the image row still uses the overlay instead of a dialog',async()=>{
+ const h=harness({dropQueue:[[{name:'拖入.png',data:'data:image/png;base64,YWJj'}]]});await h.ready();
+ const enter=h.docEvents.dragenter({preventDefault(){},dataTransfer:{types:['Files'],files:[],items:[]}});
  await h.docEvents.drop({preventDefault(){},stopPropagation(){},target:h.nodes.status,dataTransfer:{files:[],items:[]}});
- assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/open')));
+ await enter;
+ await new Promise(resolve=>setTimeout(resolve,80));
+ assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/cover')));
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
  assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'拖入.png');
+});
+test('an empty drop with no drag does not open a dialog',async()=>{
+ const h=harness();await h.ready();
+ await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
+ assert.equal(h.nodes['reference-thumbs'].children.length,0);
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(open|cover)/.test(call.url)));
+ assert.match(h.nodes.status.textContent,/这次没有读到拖入的图片/);
+ assert.doesNotMatch(h.nodes.status.textContent,/该来源没有提供可读取的图片|语音会话/);
+});
+test('a nameless PNG or JPEG is recognized from its bytes',async()=>{
+ const h=harness();await h.ready();
+ const png=Uint8Array.from([0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A,1]);
+ const jpg=Uint8Array.from([0xFF,0xD8,0xFF,0xD9]);
+ await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[{name:'',arrayBuffer:async()=>png.buffer}]}});
+ await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[{name:'camera',type:'application/octet-stream',arrayBuffer:async()=>jpg.buffer}]}});
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'拖入图片.png');
+ assert.equal(h.nodes['reference-thumbs'].children[1].children[2].textContent,'camera.jpg');
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(open|cover|read)/.test(call.url)));
 });
 test('items-only and getFiles-only drops add images with missing MIME types',async()=>{
  const h=harness();await h.ready();
@@ -122,13 +153,17 @@ test('items-only and getFiles-only drops add images with missing MIME types',asy
  assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'微信另存.png');
  assert.equal(h.nodes['reference-thumbs'].children[1].children[2].textContent,'电脑图片.jpg');
 });
-test('a file UXP cannot read and that has no path opens the drop window',async()=>{
- const h=harness();await h.ready();
+test('a file UXP cannot read and that has no path is caught by the overlay',async()=>{
+ const h=harness({dropQueue:[[{name:'拖入.png',data:'data:image/png;base64,YWJj'}]]});await h.ready();
+ const enter=h.nodes['images-row'].dragenter({preventDefault(){},dataTransfer:{types:['Files'],files:[]}});
  await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[{name:'微信图片.png',size:1,arrayBuffer:async()=>{throw new Error('access denied');}}]}});
- assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/open')));
+ await enter;
+ await new Promise(resolve=>setTimeout(resolve,80));
+ assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/cover')));
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
  assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/read')));
  assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'拖入.png');
- assert.doesNotMatch(h.nodes.status.textContent,/该来源没有提供可读取的图片|语音会话/);
+ assert.doesNotMatch(h.nodes.status.textContent,/该来源没有提供可读取的图片|语音会话|请添加 PNG、JPG 或 WebP/);
 });
 test('Explorer file URL is captured before the drop transfer is cleared and read without the helper',async()=>{
  let readStarted=false;
@@ -174,10 +209,12 @@ test('unreadable Explorer drop names a closed helper instead of a voice session'
 });
 test('an empty drop with the helper closed does not show a voice session',async()=>{
  const h=harness({helperDown:true});await h.ready();
+ await h.nodes['images-row'].dragenter({preventDefault(){},dataTransfer:{types:['Files'],files:[],items:[]}});
  await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
  assert.equal(h.nodes['reference-thumbs'].children.length,0);
  assert.match(h.nodes.status.textContent,/本机图片拖入服务未开启/);
  assert.doesNotMatch(h.nodes.status.textContent,/语音会话|该来源没有提供可读取的图片|提交状态不确定/);
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
 });
 
 test('dropping on an occupied reference replaces only that slot; dropping on the empty slot appends',async()=>{
