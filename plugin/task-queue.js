@@ -6,7 +6,7 @@ class TaskQueue{
   const index=this.jobs.findIndex(j=>j.id===record.id);if(index>=0)this.jobs[index]=record;else this.jobs.unshift(record);
   record.phase='准备图片';record.timings={startedAt:Date.now()};this.save();
   const api=await this.client();
-  if(images.length&&api.prepareImages){try{images=await api.prepareImages(images);}catch(_){/* Original images remain valid; no generation has been submitted. */}}
+  if(images.length&&api.prepareImages){try{images=await api.prepareImages(images);}catch(error){record.prepareNote=error&&error.prepareSkipped?error.message:'本机助手未开启，已改用原图直接提交。';}}
   record.timings.preparedAt=Date.now();record.phase='上传图片，等待平台接单';
   record.pendingSubmissions=record.count;record.state='submitting';this.save();
   // Each requested output is submitted once. Independent requests need not wait

@@ -132,7 +132,8 @@ function archiveCompleted(){if(job && job.source && job.state!=='uncertain'){loc
 
 function show(id, visible, display = "block") { const node = $(id),target=visible?display:"none";if(node.hidden!==!visible)node.hidden=!visible;if(node.style && node.style.display!==target)node.style.display=target; }
 const $ = id => document.getElementById(id);
-function status(message, error = false) { $('status').textContent = message; $('status').className = error ? 'error' : ''; }
+function scrubVoiceCopy(message){const text=String(message||'');if(!text||['starting','listening','stopping'].includes(voice.phase))return text;if(/语音/.test(text)&&/会话已结束|语音服务|请重新开始/.test(text))return '本机助手未开启，已改用原图直接提交。';return text;}
+function status(message, error = false) { $('status').textContent = scrubVoiceCopy(message); $('status').className = error ? 'error' : ''; }
 function matchesTaskDocument(doc, region){
  if(!doc||!region?.context)return false;
  const context=region.context;
@@ -166,7 +167,7 @@ async function key() {
   try { const value = await storage.secureStorage.getItem('lk888-key'); return String.fromCharCode(...value); }
   catch (_) { throw new Error('请在设置中填写并保存 API Key。'); }
 }
-async function client() { const api=new MediaClient(await key());api.prepareImages=async images=>{const result=await voice.request('/images/prepare','POST',{images});if(!Array.isArray(result.images)||result.images.length!==images.length)throw new Error('图片预处理返回无效。');return result.images;};return api; }
+async function client() { const api=new MediaClient(await key());api.prepareImages=async images=>{try{const result=await voice.request('/images/prepare','POST',{images});if(!Array.isArray(result.images)||result.images.length!==images.length){const invalid=new Error('图片预处理返回无效，已改用原图直接提交。');invalid.prepareSkipped=true;throw invalid;}return result.images;}catch(error){if(error&&error.prepareSkipped)throw error;const skipped=new Error('本机助手未开启，已改用原图直接提交。');skipped.prepareSkipped=true;throw skipped;}};return api; }
 async function withBusy(fn) {
   if (busy) { status('正在处理…', true); return; }
   const epoch = ++busyEpoch;
@@ -258,8 +259,9 @@ function renderTasks(){
   root.appendChild(list);
  }
  const record=queue.jobs.find(j=>j.id===selectedJobId);if(!record)return;
- const notice=(message,error=false)=>{const p=document.createElement('p');p.className='task-message'+(error?' task-error':'');p.textContent=message;root.appendChild(p);};
+ const notice=(message,error=false)=>{const text=scrubVoiceCopy(message);if(!text)return;const p=document.createElement('p');p.className='task-message'+(error?' task-error':'');p.textContent=text;root.appendChild(p);};
  if(record.state==='submitting'||record.tasks?.some(t=>t.state==='running'))notice((record.phase||'生成中')+'，可继续操作；完成后回到历史查看。');
+ if(record.prepareNote)notice(record.prepareNote,false);
  if(record.error)notice(record.error,true);
  let total=0;
  (record.tasks||[]).forEach(task=>{
@@ -380,10 +382,22 @@ async function snapshot(id){const folder=await fs.getDataFolder(),meta=await fol
 async function snapshotReferences(id){const folder=await fs.getDataFolder(),meta=await folder.createFile(id+'.json',{overwrite:true});await meta.write(JSON.stringify({references}));}
 async function restoreReferences(id){const folder=await fs.getDataFolder(),meta=JSON.parse(await(await folder.getEntry(id+'.json')).read());return Array.isArray(meta.references)?meta.references:[];}
 async function restoreCapture(id){const folder=await fs.getDataFolder(),meta=JSON.parse(await(await folder.getEntry(id+'.json')).read()),bytes=await(await folder.getEntry(id+'.bin')).read({format:storage.formats.binary});return {...meta,maskData:{...meta.mask,imageData:new Uint8Array(bytes)}};}
+function pixelSize(value){const raw=value&&typeof value==='object'&&'_value' in value?value._value:value;const number=Number(raw);return Number.isFinite(number)?number:null;}
+function selectionMatchesOpenDocument(doc){
+ if(!doc||!capture?.context)return false;
+ if(doc.id===capture.context.documentId)return true;
+ const width=pixelSize(doc.width),height=pixelSize(doc.height);
+ const same=width>0&&height>0&&width===pixelSize(capture.documentWidth)&&height===pixelSize(capture.documentHeight);
+ if(!same)return false;
+ capture.context={...capture.context,documentId:doc.id,documentName:doc.name||capture.context.documentName};
+ if(doc.path)capture.context.documentPath=doc.path;
+ capture.documentWidth=width;capture.documentHeight=height;
+ return true;
+}
 async function generate(){voice.cancel();
  const prompt=$('prompt').value.trim(),hasSelection=!!(capture&&sourceImage);
  if(!prompt&&!references.length)throw new Error('请添加图片或填写提示词。');
- if(hasSelection&&(!app.activeDocument||app.activeDocument.id!==capture.context.documentId))throw new Error('请读取当前文档选区。');
+ if(hasSelection&&!selectionMatchesOpenDocument(app.activeDocument))throw new Error('请读取当前文档选区。');
  const configuredRatio=$('output-size').value||'original',selection=hasSelection?capture.context.originalBounds:null;
  const ratio=configuredRatio==='original'?(selection?closestStandardAspect(selection.right-selection.left,selection.bottom-selection.top):'original'):configuredRatio;
  if(hasSelection&&capture.aspectRatio&&capture.aspectRatio!==ratio){await readSelection(ratio,true);$('prompt').value=prompt;}
@@ -399,7 +413,7 @@ async function generate(){voice.cancel();
   activeSubmissions.delete(id);refresh();
   if(selectedJobId!==id)return;
   if(record.state==='failed'||record.state==='uncertain'){status(record.error||'生成失败，未返回图片。',true);return;}
-  status('已提交。生成在后台继续，可新建另一处改图。');
+  status(record.prepareNote?'已提交。'+record.prepareNote:'已提交。生成在后台继续，可新建另一处改图。');
   queue.tick();
  }).catch(error=>{
   activeSubmissions.delete(id);record.state='failed';record.error=error.message||'生成提交失败。';queue.save();refresh();

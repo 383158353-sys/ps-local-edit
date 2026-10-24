@@ -45,8 +45,9 @@ function imageSources(payload) {
 class MediaClient {
   constructor(key, fetchImpl = fetch) {
     this.key = key; this.fetch = fetchImpl; this.base = 'https://api.lk888.ai';
-    // Only the Photoshop runtime uses the global fetch. Tests pass a double and talk to the API URL directly.
-    this.routeGenerateLocally = fetchImpl === fetch;
+    // Generation goes to LK888 directly. The local helper is optional and, when it is
+    // closed, its 404 is the voice-session sentence. Do not send generate there.
+    this.routeGenerateLocally = false;
   }
   async request(path, body) {
     const local = path === '/v1/media/generate' && this.routeGenerateLocally;

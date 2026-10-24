@@ -28,6 +28,17 @@ test('switching editor stops microphone and does not insert late dictation',asyn
   await controller.start();clearTimeout(controller.timer);context='b';await controller.poll(controller.epoch);
   assert.equal(controller.session,null);assert.deepEqual(texts,[]);assert.equal(paths.at(-1),'/stop');
 });
+test('image prepare does not surface a voice-session 404 when the helper is closed',async()=>{
+  const controller=new VoiceController({fetchImpl:async()=>({ok:false,status:404,json:async()=>({message:'语音会话已结束，请重新开始。'})})});
+  await assert.rejects(controller.request('/images/prepare','POST',{images:['data:image/png;base64,YQ==']}),error=>error.message==='本机助手未开启。'&&!/语音会话/.test(error.message));
+});
+test('cancel without a session does not report a voice error',async()=>{
+  const states=[];
+  const controller=new VoiceController({onState:s=>states.push(s),fetchImpl:async()=>{throw new Error('fetch failed');}});
+  controller.cancel();
+  assert.deepEqual(states,[]);
+  assert.equal(controller.phase,'idle');
+});
 test('unavailable helper shows actionable error and does not submit audio',async()=>{
   const states=[];const controller=new VoiceController({onState:s=>states.push(s),fetchImpl:async()=>{throw new Error('fetch failed');}});
   await controller.start();assert.equal(states.at(-1).state,'error');assert.match(states.at(-1).message,/打开局部改图插件/);assert.equal(controller.session,null);

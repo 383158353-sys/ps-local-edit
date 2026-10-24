@@ -5,7 +5,7 @@ const { test } = require('node:test');
 const api = require('../plugin/api');
 const {TaskQueue}=require('../plugin/task-queue');const {pngRGBA}=require('../plugin/png');
 
-function harness({ switchDocument = false, reopenSameDocument = false, reopenPathless = false, submissionFails = false, submissionMessage = '', optimizerDeferred = false, noSelection = false, captureHangs = false, captureMismatch = false, captureError = '', boundsThrows = false, busyTimeoutMs = 0 } = {}) {
+function harness({ switchDocument = false, reopenSameDocument = false, reopenPathless = false, submissionFails = false, submissionMessage = '', helperDown = false, optimizerDeferred = false, noSelection = false, captureHangs = false, captureMismatch = false, captureError = '', boundsThrows = false, busyTimeoutMs = 0 } = {}) {
   const nodes = {}, local = new Map(), calls = [], writes = [], requests = [], reads = [], docEvents = {}, helperCalls=[],optimizerCalls=[],captureArgs=[];let reloads=0, imageDecodes=0,optimizerCancels=0,resolveOptimize;
   function makeNode(id='') { const node={id,value:id==='prompt'?'改成红色':id==='model'?'banana-2':'',textContent:'',hidden:false,style:{},children:[],attributes:{},className:'',classList:{add(){},remove(){}},addEventListener(event,fn){this[event]=fn;},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},append(...items){for(const item of items)this.appendChild(item);},appendChild(item){item.parentNode=this;this.children.push(item);},replaceChildren(...items){this.children=[];this.append(...items);},get parentElement(){return makeNode('parent');}};Object.defineProperty(node,'innerHTML',{get(){return '';},set(value){if(value==='')this.children=[];}});return node; }
   const document = { readyState: 'interactive', addEventListener(event,fn) {docEvents[event]=fn;}, createElement: tag=>makeNode(tag), getElementById(id) { return nodes[id] ||= makeNode(id); },querySelectorAll(){return [];} };
@@ -20,6 +20,7 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
   const dataFiles=new Map();const folder={createFile:async name=>({write:async value=>dataFiles.set(name,value)}),getEntry:async name=>{reads.push(name);return {read:async()=>dataFiles.get(name)};}};
   const storage = { formats: { binary: 'binary' }, secureStorage: { getItem: async () => new Uint8Array(Buffer.from('test-key')) }, localFileSystem: { getDataFolder:async()=>folder,getTemporaryFolder: async () => ({ createFile: async () => ({ write: async value => writes.push(value) }) }), createSessionToken: () => 'session-token' } };
   const fetch = async (url, options) => {
+    if(helperDown&&String(url).includes('127.0.0.1:17402'))return {ok:false,status:404,json:async()=>({message:'语音会话已结束，请重新开始。'})};
     if(url.includes('127.0.0.1:17402/annotate/')){helperCalls.push({url,options});return {ok:true,json:async()=>url.includes('/open')?{id:'test-annotation'}:{state:'waiting'}};}
     if(url.includes('127.0.0.1:17402/drop/')){helperCalls.push({url,options});return {ok:true,json:async()=>url.includes('/open')?{id:'test-drop'}:{references:[{name:'拖入.png',data:'data:image/png;base64,YWJj'}]}};}
     if (url.endsWith('/generate')) { requests.push(JSON.parse(options.body)); if (submissionMessage) return { ok:false, status:400, json:async()=>({error:{message:submissionMessage}}) }; if (submissionFails) throw new Error('connection lost'); return { ok: true, json: async () => ({ task_id: requests.length===1?'existing-task':'task-'+requests.length }) }; }
@@ -48,7 +49,7 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
   // init loads saved prompt; restore the user's entry for this run.
   nodes.prompt ||= document.getElementById('prompt');nodes.prompt.value = '改成红色';
   document.getElementById('quality'); document.getElementById('output-size');
-  return { newDraft:()=>context.newDraft(),openHistory:id=>context.openHistory(id), currentId:()=>vm.runInNewContext("selectedJobId",context), nodes, docEvents, calls, writes, reads, local, capture, captureArgs, requests, helperCalls, optimizerCalls,resolveOptimize:value=>resolveOptimize?.(value),saveAnnotation:image=>context.saveAnnotation(image),get optimizerCancels(){return optimizerCancels;}, get reloads(){return reloads;}, get imageDecodes(){return imageDecodes;}, ready:async()=>{for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r));nodes.prompt.value='改成红色';} };
+  return { app, newDraft:()=>context.newDraft(),openHistory:id=>context.openHistory(id), currentId:()=>vm.runInNewContext("selectedJobId",context), nodes, docEvents, calls, writes, reads, local, capture, captureArgs, requests, helperCalls, optimizerCalls,resolveOptimize:value=>resolveOptimize?.(value),saveAnnotation:image=>context.saveAnnotation(image),get optimizerCancels(){return optimizerCancels;}, get reloads(){return reloads;}, get imageDecodes(){return imageDecodes;}, ready:async()=>{for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r));nodes.prompt.value='改成红色';} };
 }
 
 
@@ -210,6 +211,34 @@ test('invalid mixed file drop does not leave a partial reference list',async()=>
  assert.match(h.nodes.status.textContent,/PNG、JPG 或 WebP/);
 });
 test('generation releases editor and never auto imports results',async()=>{const h=harness();await h.ready();await h.nodes.generate.click();await h.ready();assert.equal(h.requests.length,1);assert.equal(h.calls.length,0);assert.equal(h.nodes.generate.disabled,false);assert.ok(JSON.parse(h.local.get('lk888-jobs'))[0].tasks[0].results.length);});
+test('same-size document with a new id is adopted instead of asking for another selection read',async()=>{
+ const h=harness();await h.ready();await h.nodes['capture-selection'].click();
+ h.app.activeDocument.id=77;
+ h.nodes.prompt.value='字体写清楚';await h.nodes.generate.click();await h.ready();
+ assert.equal(h.requests.length,1);
+ assert.equal(h.capture.context.documentId,77);
+ assert.doesNotMatch(h.nodes.status.textContent,/请读取当前文档选区|语音会话|提交状态不确定/);
+});
+test('a different canvas size still asks for the current document selection',async()=>{
+ const h=harness();await h.ready();await h.nodes['capture-selection'].click();
+ h.app.activeDocument.id=77;h.app.activeDocument.width=50;h.app.activeDocument.height=50;
+ h.nodes.prompt.value='字体写清楚';await h.nodes.generate.click();await h.ready();
+ assert.equal(h.requests.length,0);
+ assert.match(h.nodes.status.textContent,/请读取当前文档选区/);
+ assert.doesNotMatch(h.nodes.status.textContent,/语音会话/);
+});
+test('a closed helper skips image prepare, submits the original, and never shows voice copy',async()=>{
+ const h=harness({helperDown:true});await h.ready();await h.nodes['capture-selection'].click();
+ h.nodes.prompt.value='字体写清楚小浣熊干脆面';await h.nodes.generate.click();await h.ready();
+ const notes=(h.nodes['task-content'].children||[]).map(node=>node.textContent||'').join('\n');
+ const text=h.nodes.status.textContent+'\n'+notes;
+ assert.equal(h.requests.length,1);
+ assert.match(text,/本机助手未开启/);
+ assert.doesNotMatch(text,/语音会话|提交状态不确定|尚无生成结果|请读取当前文档选区/);
+ const job=JSON.parse(h.local.get('lk888-jobs'))[0];
+ assert.notEqual(job.state,'uncertain');
+ assert.ok(job.tasks.length||job.state==='ready'||job.state==='running'||job.state==='failed');
+});
 test('generation failure shows the provider reason and never a voice-session or uncertain status',async()=>{
  const h=harness({submissionMessage:'模型不存在或当前密钥无权限'});await h.ready();
  h.nodes.prompt.value='字体写清楚小浣熊干脆面';await h.nodes.generate.click();await h.ready();
