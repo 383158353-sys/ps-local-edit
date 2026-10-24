@@ -5,16 +5,18 @@ const { test } = require('node:test');
 const api = require('../plugin/api');
 const {TaskQueue}=require('../plugin/task-queue');const {pngRGBA}=require('../plugin/png');
 
-function harness({ switchDocument = false, reopenSameDocument = false, reopenPathless = false, submissionFails = false, optimizerDeferred = false, noSelection = false } = {}) {
-  const nodes = {}, local = new Map(), calls = [], writes = [], requests = [], reads = [], docEvents = {}, helperCalls=[],optimizerCalls=[];let reloads=0, imageDecodes=0,optimizerCancels=0,resolveOptimize;
+function harness({ switchDocument = false, reopenSameDocument = false, reopenPathless = false, submissionFails = false, optimizerDeferred = false, noSelection = false, captureHangs = false, captureMismatch = false, captureError = '', boundsThrows = false, busyTimeoutMs = 0 } = {}) {
+  const nodes = {}, local = new Map(), calls = [], writes = [], requests = [], reads = [], docEvents = {}, helperCalls=[],optimizerCalls=[],captureArgs=[];let reloads=0, imageDecodes=0,optimizerCancels=0,resolveOptimize;
   function makeNode(id='') { const node={id,value:id==='prompt'?'改成红色':id==='model'?'banana-2':'',textContent:'',hidden:false,style:{},children:[],attributes:{},className:'',classList:{add(){},remove(){}},addEventListener(event,fn){this[event]=fn;},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},append(...items){for(const item of items)this.appendChild(item);},appendChild(item){item.parentNode=this;this.children.push(item);},replaceChildren(...items){this.children=[];this.append(...items);},get parentElement(){return makeNode('parent');}};Object.defineProperty(node,'innerHTML',{get(){return '';},set(value){if(value==='')this.children=[];}});return node; }
   const document = { readyState: 'interactive', addEventListener(event,fn) {docEvents[event]=fn;}, createElement: tag=>makeNode(tag), getElementById(id) { return nodes[id] ||= makeNode(id); },querySelectorAll(){return [];} };
-  const originalDoc = { id: 12, name: 'sample.psd', path: 'C:/project/sample.psd', width: 1000, height: 800, mode: 'RGB', selection: noSelection ? null : { bounds: {left:150,top:120,right:350,bottom:240} } };
+  const selection = noSelection ? null : { bounds: {left:150,top:120,right:350,bottom:240} };
+  if (boundsThrows && selection) Object.defineProperty(selection, 'bounds', { get() { throw new Error('dom bounds blocked'); } });
+  const originalDoc = { id: 12, name: 'sample.psd', path: 'C:/project/sample.psd', width: 1000, height: 800, mode: 'RGB', selection };
   const app = { activeDocument: originalDoc };
   const bounds = { left: 120, top: 90, right: 420, bottom: 290, width: 300, height: 200 };
   const mask = { width: 300, height: 200, components: 1, imageData: new Uint8Array(60000) };
   const capture = { bounds, maskData: mask, documentWidth:1000,documentHeight:800,context: { documentId: 12, documentName: 'sample.psd', documentPath:reopenPathless?'':'C:/project/sample.psd', originalBounds: { left: 150, top: 120, right: 350, bottom: 240 } }, imageData: { sourceBounds: bounds, imageData: { width: 300, height: 200, components:4,getData:async()=>new Uint8Array(300*200*4), dispose() {} } } };
-  const ps = { getSelectionBounds:async()=>({left:150,top:120,right:350,bottom:240,width:200,height:120}),captureSelection: async () => capture, placeBack: async (...args) => calls.push(args),placeGeneratedAsLayer:async (...args)=>calls.push(args) };
+  const ps = { getSelectionBounds:async()=>({left:150,top:120,right:350,bottom:240,width:200,height:120}),hasActiveSelection:async()=>!noSelection,captureSelection: async (...args) => { captureArgs.push(args); if (captureError) throw new Error(captureError); if (captureHangs) return new Promise(() => {}); if (captureMismatch) return {...capture, imageData:{ sourceBounds:{ left:11.5, top:7.25, right:311.5, bottom:207.25 }, imageData:capture.imageData.imageData }}; return capture; }, placeBack: async (...args) => calls.push(args),placeGeneratedAsLayer:async (...args)=>calls.push(args) };
   const dataFiles=new Map();const folder={createFile:async name=>({write:async value=>dataFiles.set(name,value)}),getEntry:async name=>{reads.push(name);return {read:async()=>dataFiles.get(name)};}};
   const storage = { formats: { binary: 'binary' }, secureStorage: { getItem: async () => new Uint8Array(Buffer.from('test-key')) }, localFileSystem: { getDataFolder:async()=>folder,getTemporaryFolder: async () => ({ createFile: async () => ({ write: async value => writes.push(value) }) }), createSessionToken: () => 'session-token' } };
   const fetch = async (url, options) => {
@@ -27,20 +29,26 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
     return { ok: true, json: async () => ({ is_final: true, state: 'success', result_url: 'data:image/png;base64,YWJj' }) };
   };
   class Client extends api.MediaClient { constructor(key) { super(key, fetch); } }
-  const context = { document, location:{reload:()=>{reloads++;}}, localStorage: { getItem: k => local.get(k) || null, setItem: (k, v) => local.set(k, v), removeItem: k => local.delete(k) }, setTimeout, clearTimeout, Uint8Array, console, fetch, require(name) {
+  const context = { __lk888BusyTimeoutMs: busyTimeoutMs || undefined, document, location:{reload:()=>{reloads++;}}, localStorage: { getItem: k => local.get(k) || null, setItem: (k, v) => local.set(k, v), removeItem: k => local.delete(k) }, setTimeout, clearTimeout, Uint8Array, console, fetch, require(name) {
     if (name === 'photoshop') return { app, imaging: { encodeImageData: async () => 'YWJj' }, constants: { DocumentMode: { RGB: 'RGB' } } };
     if (name === 'uxp') return { storage };
     if (name === './modules/ps') return ps;if(name==='./modules/geometry')return require('../plugin/modules/geometry');
     if(name==='./prompt-editor')return require('../plugin/prompt-editor');if(name==='./voice'){const Base=require('../plugin/voice').VoiceController;return {VoiceController:class extends Base{constructor(options){super({...options,fetchImpl:fetch});}}};}if(name==='./optimizer')return {OptimizerClient:class{cancel(){optimizerCancels++;}optimize(input){optimizerCalls.push(input);if(optimizerDeferred)return new Promise(resolve=>{resolveOptimize=resolve;});return Promise.resolve({prompt:'优化后的修改要求',images:[{name:'影词新增.png',data:'data:image/png;base64,YWJj'}]});}}};if(name==='./task-queue')return {TaskQueue};if(name==='./png')return {pngRGBA};
     if (name === './modules/fs') return { arrayBufferToBase64:v=>Buffer.from(v).toString('base64'), base64ToArrayBuffer: v => {imageDecodes++;return Uint8Array.from(Buffer.from(v, 'base64')).buffer;} };
     if (name === './api') return { ...api, MediaClient: Client };
+    if (name === './model-selection') return require('../plugin/model-selection');
+    if (name === './model-manager') {
+      const module = { exports: {} };
+      vm.runInNewContext(fs.readFileSync('plugin/model-manager.js', 'utf8'), { module, exports: module.exports, console, document, localStorage: context.localStorage, require(inner) { throw new Error(inner); } }, { filename: 'model-manager.js' });
+      return module.exports;
+    }
     throw new Error(name);
   } };
   vm.runInNewContext(fs.readFileSync('plugin/main.js', 'utf8'), context);
   // init loads saved prompt; restore the user's entry for this run.
   nodes.prompt ||= document.getElementById('prompt');nodes.prompt.value = '改成红色';
   document.getElementById('quality'); document.getElementById('output-size');
-  return { newDraft:()=>context.newDraft(),openHistory:id=>context.openHistory(id), currentId:()=>vm.runInNewContext("selectedJobId",context), nodes, docEvents, calls, writes, reads, local, capture, requests, helperCalls, optimizerCalls,resolveOptimize:value=>resolveOptimize?.(value),saveAnnotation:image=>context.saveAnnotation(image),get optimizerCancels(){return optimizerCancels;}, get reloads(){return reloads;}, get imageDecodes(){return imageDecodes;}, ready:async()=>{for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r));nodes.prompt.value='改成红色';} };
+  return { newDraft:()=>context.newDraft(),openHistory:id=>context.openHistory(id), currentId:()=>vm.runInNewContext("selectedJobId",context), nodes, docEvents, calls, writes, reads, local, capture, captureArgs, requests, helperCalls, optimizerCalls,resolveOptimize:value=>resolveOptimize?.(value),saveAnnotation:image=>context.saveAnnotation(image),get optimizerCancels(){return optimizerCancels;}, get reloads(){return reloads;}, get imageDecodes(){return imageDecodes;}, ready:async()=>{for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r));nodes.prompt.value='改成红色';} };
 }
 
 
@@ -299,6 +307,62 @@ test('native scrollbar arrows advance exactly two ordered rows without duplicate
  assert.doesNotMatch(fs.readFileSync('plugin/index.html','utf8'),/id="tabs-(up|down)"/);
 });
 
+test('a hung read reports progress, a second click is not silent, and the timeout unlocks the panel',async()=>{
+ const h=harness({captureHangs:true,busyTimeoutMs:300});await h.ready();
+ const pending=h.nodes['capture-selection'].click();
+ await new Promise(resolve=>setTimeout(resolve,0));
+ assert.match(h.nodes.status.textContent,/正在读取选区/);
+ assert.equal(h.nodes.generate.textContent,'正在准备…');
+ await h.nodes['capture-selection'].click();
+ assert.match(h.nodes.status.textContent,/正在处理/);
+ await pending;
+ assert.match(h.nodes.status.textContent,/解除锁定/);
+ assert.equal(h.nodes.generate.disabled,false);
+ assert.equal(h.nodes.generate.textContent,'生成');
+});
+test('reload stays available while a selection read is still busy',async()=>{
+ const h=harness({captureHangs:true,busyTimeoutMs:1000});await h.ready();
+ const pending=h.nodes['capture-selection'].click();
+ await new Promise(resolve=>setTimeout(resolve,0));
+ assert.match(h.nodes.status.textContent,/正在读取选区/);
+ await h.nodes['reload-panel'].click();
+ assert.equal(h.reloads,1);
+ assert.match(h.nodes.status.textContent,/正在重载面板|正在读取选区|正在处理/);
+ pending.catch(()=>{});
+});
+test('selection read accepts a capture whose reported origin does not exactly match the crop',async()=>{
+ const h=harness({captureMismatch:true});await h.ready();
+ await h.nodes['capture-selection'].click();
+ assert.doesNotMatch(h.nodes['selection-size'].textContent,/尚未读取/);
+ assert.match(h.nodes.status.textContent,/已读取选区/);
+ assert.match(h.nodes.preview.src,/^data:image\/png/);
+ assert.equal(h.captureArgs[0][3].selectionBounds.width,200);
+ assert.equal(h.nodes.generate.textContent,'生成');
+});
+test('reading a selection does not depend on the synchronous selection.bounds getter',async()=>{
+ const h=harness({boundsThrows:true});await h.ready();
+ await h.nodes['capture-selection'].click();
+ assert.match(h.nodes.status.textContent,/已读取选区/);
+ assert.doesNotMatch(h.nodes['selection-size'].textContent,/尚未读取/);
+});
+test('a capture failure stays on the status line and releases the lock',async()=>{
+ const h=harness({captureError:'选区导出失败：模拟'});await h.ready();
+ await h.nodes['capture-selection'].click();
+ assert.match(h.nodes.status.textContent,/选区导出失败：模拟/);
+ assert.match(h.nodes['selection-size'].textContent,/尚未读取选区/);
+ assert.equal(h.nodes.generate.disabled,false);
+ assert.equal(h.nodes.generate.textContent,'生成');
+});
+test('result thumbnails keep their source and do not download the original until add or save',async()=>{
+ const h=harness();await h.ready();await h.nodes.generate.click();await h.ready();
+ const img=findNode(h.nodes['task-content'],node=>node.id==='img');
+ if(img.onload)await img.onload();
+ if(img.onerror)await img.onerror();
+ assert.equal(h.imageDecodes,0);
+ assert.match(img.src,/^data:image\/png/);
+ await button(h.nodes['task-content'],'添加图层').onclick();await h.ready();
+ assert.equal(h.imageDecodes,1);
+});
 test('uploaded references survive reopening a draft without a selection',async()=>{
  const h=harness({noSelection:true});await h.ready();await h.newDraft();
  await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[{name:'保留.png',size:1,arrayBuffer:async()=>Uint8Array.from([9]).buffer}]}});

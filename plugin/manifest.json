@@ -2,7 +2,7 @@
   "manifestVersion": 5,
   "id": "com.local.lk888.psedit",
   "name": "局部改图",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "main": "index.html",
   "host": {
     "app": "PS",

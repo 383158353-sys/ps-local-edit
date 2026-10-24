@@ -11,7 +11,7 @@
 
 1. `git clone https://github.com/383158353-sys/ps-local-edit.git`
 2. 任选其一：
-   - 双击 `dist/局部改图-LK888-0.1.1.ccx`（Creative Cloud 可装时）
+   - 双击 `dist/局部改图-LK888-0.1.2.ccx`（Creative Cloud 可装时）
    - 或用 Adobe UXP Developer Tool 添加 `plugin/manifest.json` → Load
    - 或在 PowerShell 运行：`./scripts/install-plugin-autoload.ps1`（登录后自动向 PS 注册开发版插件）
 3. 也可双击根目录 `打开局部改图插件.cmd`（会启动本机语音助手并加载插件）
