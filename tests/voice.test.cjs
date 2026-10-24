@@ -144,6 +144,22 @@ test('drop cover arms the overlay and never opens the titled drop window',async(
     assert.equal(hidden.action,'idle');assert.notEqual(again.id,covered.id);assert.equal(windows.length,0);
   }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
+test('drop cover wakes a waiting overlay with the cursor hint and no dialog',async()=>{
+  const windows=[];
+  const server=createVoiceServer({spawnWorker:()=>{const child=fakeChild();setImmediate(()=>child.emit('exit',0));return child;},dropWindowLauncher:id=>{windows.push(id);return fakeChild();},overlayLauncher:()=>fakeChild()});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const base='http://127.0.0.1:'+server.address().port,headers={'X-PS-Local-Voice':'1','Content-Type':'application/json'};
+  try{
+    const pending=fetch(base+'/drop/overlay?wait=1&since=0',{headers});
+    await new Promise(resolve=>setTimeout(resolve,40));
+    const covered=await(await fetch(base+'/drop/cover',{method:'POST',headers,body:JSON.stringify({x:11,y:22})})).json();
+    const shown=await Promise.race([pending.then(response=>response.json()),new Promise((_,reject)=>setTimeout(()=>reject(new Error('overlay wait timed out')),1000))]);
+    assert.equal(shown.action,'show');assert.equal(shown.id,covered.id);assert.equal(shown.x,11);assert.equal(shown.y,22);assert.equal(shown.ready,false);
+    assert.equal(windows.length,0);
+    assert.equal((await(await fetch(base+'/drop/ready',{method:'POST',headers})).json()).state,'ready');
+    assert.equal((await(await fetch(base+'/drop/overlay',{headers})).json()).ready,true);
+  }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+});
 test('drop read returns local image bytes and rejects anything that is not an image path',async()=>{
   const read=[];
   const server=createVoiceServer({spawnWorker:()=>{const child=fakeChild();setImmediate(()=>child.emit('exit',0));return child;},pathReader:async file=>{read.push(file);if(file.endsWith('.jpg'))return Buffer.from('jpeg-bytes');return Buffer.from('png-bytes');}});

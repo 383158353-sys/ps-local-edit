@@ -91,11 +91,13 @@ test('dropping UXP and browser files adds numbered reference images',async()=>{
 });
 test('an empty UXP drop is caught by the overlay and does not open a dialog',async()=>{
  const h=harness({dropQueue:[[{name:'拖入.png',data:'data:image/png;base64,YWJj'}]]});await h.ready();
- const enter=h.nodes['images-row'].dragenter({preventDefault(){},dataTransfer:{types:['Files'],files:[],items:[]}});
+ const enter=h.nodes['images-row'].dragenter({preventDefault(){},screenX:320,screenY:240,dataTransfer:{types:['Files'],files:[],items:[]}});
  await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
  await enter;
  await new Promise(resolve=>setTimeout(resolve,80));
- assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/cover')&&call.options.method==='POST'));
+ const cover=h.helperCalls.find(call=>call.url.includes('/drop/cover')&&call.options.method==='POST');
+ assert.ok(cover);
+ assert.deepEqual(JSON.parse(cover.options.body),{x:320,y:240});
  assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
  assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/poll?id=test-drop')));
  assert.equal(h.nodes['reference-thumbs'].children.length,1);

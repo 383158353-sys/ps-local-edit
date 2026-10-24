@@ -21,7 +21,7 @@ Photoshop 内的简洁 UXP 面板，通过 https://api.lk888.ai 调用生图模�
 需要 Photoshop 25.0 或更新版本。目前本机 Photoshop 27.6 已加载，用户已进行实际生成与图层回填；不同宿主和模型仍需自行验证。
 
 1. 推荐运行影词魔方仓库发布页的 `CinePrompt-Photoshop-Windows.exe`，安装包同时部署桌面程序、本机助手和本插件。
-2. 单独安装插件时可尝试双击 `dist/局部改图-LK888-0.1.7.ccx` 使用 Creative Cloud 安装。
+2. 单独安装插件时可尝试双击 `dist/局部改图-LK888-0.1.8.ccx` 使用 Creative Cloud 安装。
 3. 若本地 CCX 无法安装，通过 Adobe UXP Developer Tool 添加 `plugin/manifest.json`，点击 Load。
 4. 在 PS 增效工具中打开面板，进入设置填写并保存自己的 LK888 API Key。
 5. 在 RGB 文档选择区域，点击更新选区，输入要求后生成。

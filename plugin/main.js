@@ -762,10 +762,16 @@ async function payloadsFromLocations(locations){
 }
 let dropArm=null;
 function dropHelperDown(error){return /未开启|未连接|没有这个接口|拖入服务|助手/.test(String(error&&error.message||''));}
-function missDropMessage(helperDown){return helperDown?'本机图片拖入服务未开启。可粘贴图片，或点「添加图片」。':'这次没有读到拖入的图片。可粘贴图片，或点「添加图片」。';}
-// UXP often delivers an empty DataTransfer, and the OS drag is already over
-// when the drop event runs. Cover the panel on dragenter so this same drag
-// can land on a native window that is allowed to read the file.
+function missDropMessage(helperDown){return helperDown?'本机图片拖入服务未开启。可粘贴图片，或点「添加图片」。':'这次没有读到拖入的图片。请拖到面板上停一下再松开；也可粘贴图片，或点「添加图片」。';}
+function startingDropMessage(){return '拖入接图层还在启动。请再拖一次；也可粘贴图片，或点「添加图片」。';}
+// UXP's drop often carries no file. Cover as soon as the drag enters, while the
+// button is still down, so the resident catch layer can take this same drop.
+function dragPoint(event){
+  const x=Number(event&&event.screenX),y=Number(event&&event.screenY),point={};
+  if(Number.isFinite(x))point.x=x;
+  if(Number.isFinite(y))point.y=y;
+  return point;
+}
 function releaseDropOverlay(){
   ++dropPollToken;
   const armed=dropArm&&!dropArm.done;
@@ -777,7 +783,7 @@ async function pollArmedDrop(arm){
   const expires=arm.at+8000;
   while(arm.token===dropPollToken&&!arm.done&&Date.now()<expires){
     if(arm.expecting&&!arm.dropAt)arm.dropAt=Date.now();
-    if(arm.dropAt&&Date.now()-arm.dropAt>2500)break;
+    if(arm.dropAt&&Date.now()-arm.dropAt>3500)break;
     try{
       const response=await voice.request('/drop/poll?id='+encodeURIComponent(arm.id));
       if(arm.token!==dropPollToken||arm.done)return;
@@ -796,18 +802,19 @@ async function pollArmedDrop(arm){
     }
     await new Promise(resolve=>setTimeout(resolve,300));
   }
-  if(arm.token===dropPollToken&&arm.expecting&&!arm.done){arm.done=true;status(missDropMessage(false),true);voice.request('/drop/hide','POST').catch(()=>{});}
+  if(arm.token===dropPollToken&&arm.expecting&&!arm.done){arm.done=true;status(arm.ready?missDropMessage(false):startingDropMessage(),true);voice.request('/drop/hide','POST').catch(()=>{});}
 }
-async function armDropOverlay(){
+async function armDropOverlay(event){
   if(dropArm&&!dropArm.done&&Date.now()-dropArm.at<8000&&(!dropArm.failed||Date.now()-dropArm.at<1200))return;
   const token=++dropPollToken,jobId=selectedJobId;
-  const arm={token,at:Date.now(),jobId,id:null,failed:false,helperDown:false,done:false,expecting:false,dropAt:0,target:null};
+  const arm={token,at:Date.now(),jobId,id:null,failed:false,helperDown:false,done:false,expecting:false,ready:false,dropAt:0,target:null};
   dropArm=arm;
   try{
-    const opened=await voice.request('/drop/cover','POST');
+    const opened=await voice.request('/drop/cover','POST',dragPoint(event));
     if(token!==dropPollToken||arm.done)return;
     if(!opened||!opened.id)throw new Error('无法准备拖入。');
     arm.id=opened.id;
+    arm.ready=!!opened.ready;
     pollArmedDrop(arm);
   }catch(error){
     if(token!==dropPollToken)return;
@@ -950,7 +957,7 @@ async function init() {
   document.addEventListener('mousemove',moveReferenceOnPointer);
   document.addEventListener('mouseup',endReferencePointer);
   const imageRow=$('images-row'),dropzone=$('dropzone');
-  const acceptDrag=event=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='copy';dropzone.classList.add('dragging');if(dragLooksLikeFiles(event))return armDropOverlay();};
+  const acceptDrag=event=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='copy';dropzone.classList.add('dragging');if(dragLooksLikeFiles(event))return armDropOverlay(event);};
   const handleImageDrop=event=>{
     const snap=snapshotDrop(event&&event.dataTransfer);
     event.preventDefault();event.stopPropagation?.();dropzone.classList.remove('dragging');
