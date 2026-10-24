@@ -82,6 +82,20 @@ test('voice session reports microphone level and distinguishes silence from reje
     assert.match(state.message,/检测到麦克风声音/);
   } finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
+test('generate proxy is not answered as a voice session and unknown routes stay non-voice',async()=>{
+  let forwarded;
+  const server=createVoiceServer({spawnWorker:()=>{const child=fakeChild();setImmediate(()=>child.emit('exit',0));return child;},generateProxy:async raw=>{forwarded=JSON.parse(raw);return {status:200,body:JSON.stringify({task_id:'gen-1'})};}});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const base='http://127.0.0.1:'+server.address().port,headers={'X-PS-Local-Voice':'1','Content-Type':'application/json'};
+  try{
+    const generated=await fetch(base+'/media/generate',{method:'POST',headers,body:JSON.stringify({key:'sk-test',payload:{model:'banana-2',prompt:'写清楚',params:{images:[]}}})});
+    assert.equal(generated.status,200);assert.equal((await generated.json()).task_id,'gen-1');assert.equal(forwarded.payload.model,'banana-2');assert.equal(forwarded.key,'sk-test');
+    const unknown=await(await fetch(base+'/media/nope',{headers})).json();
+    assert.equal(unknown.message,'本机服务没有这个接口。');assert.doesNotMatch(unknown.message,/语音会话/);
+    const missing=await(await fetch(base+'/status',{headers})).json();
+    assert.match(missing.message,/语音会话已结束/);
+  }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+});
 test('local drop window sends images into the panel polling queue',async()=>{
   const launched=[];const server=createVoiceServer({spawnWorker:()=>{const child=fakeChild();setImmediate(()=>child.emit('exit',0));return child;},dropWindowLauncher:id=>{launched.push(id);return fakeChild();}});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));

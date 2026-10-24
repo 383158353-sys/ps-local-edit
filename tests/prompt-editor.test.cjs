@@ -18,6 +18,15 @@ function pasteEvent(clipboardData={}){
 }
 async function flush(){await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));}
 
+test('voice session text stays hidden until dictation is started',()=>{
+  const h=fixture();
+  h.editor.voice({state:'error',message:'语音会话已结束，请重新开始。'});
+  h.editor.voice({state:'idle',message:'语音会话已结束，请重新开始。'});
+  assert.equal(h.voice.textContent,'🎙 语音');
+  assert.deepEqual(h.notices,[]);
+  h.editor.voice({state:'starting',message:'正在启动中文听写…'});
+  assert.deepEqual(h.notices.at(-1),['正在启动中文听写…',false]);
+});
 test('plain text paste replaces selected words and preserves surrounding prompt',async()=>{
   const h=fixture();h.input.selectionStart=0;h.input.selectionEnd=2;
   const event=pasteEvent();h.input.events.paste(event);await flush();

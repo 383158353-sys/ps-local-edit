@@ -138,8 +138,14 @@ class PromptEditor {
     finally{this.pasting=false;}
   }
   voice(data){
-    this.voiceState=data.state;this.voiceButton.textContent=['starting','listening','stopping'].includes(data.state)?'⏹ 停止':'🎙 语音';
+    const live=['starting','listening','stopping'].includes(data.state);
+    if(live)this.voiceEngaged=true;
+    this.voiceState=data.state;
+    this.voiceButton.textContent=live?'⏹ 停止':'🎙 语音';
+    // Idle cancel and leftover session errors must not appear when dictation was never started.
+    if(!this.voiceEngaged)return;
     this.onNotice(data.message||'',data.state==='error');
+    if(data.state==='idle'||data.state==='complete')this.voiceEngaged=false;
   }
 }
 module.exports={PromptEditor};

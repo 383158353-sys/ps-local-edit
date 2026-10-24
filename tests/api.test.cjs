@@ -37,8 +37,36 @@ test('image editing submits the source and references through LK888 media protoc
 test('an ambiguous submission failure is not retried', async () => {
   let count = 0;
   const api = new MediaClient('test-key', async () => { count++; throw new Error('network lost'); });
-  await assert.rejects(api.submit('tt-image-2', 'edit', ['source']), /提交生图任务.*勿重复生成/);
+  await assert.rejects(api.submit('tt-image-2', 'edit', ['source']), /提交生图任务时网络连接失败或超时/);
   assert.equal(count, 1);
+});
+test('a stale local helper voice 404 is not shown and the submit goes to the platform once', async () => {
+  const urls = [];
+  const api = new MediaClient('test-key', async (url, options) => {
+    urls.push(url);
+    if (String(url).includes('127.0.0.1')) return { ok: false, status: 404, json: async () => ({ message: '语音会话已结束，请重新开始。' }) };
+    assert.equal(options.headers.Authorization, 'Bearer test-key');
+    assert.equal(JSON.parse(options.body).model, 'banana-2');
+    return { ok: true, status: 200, json: async () => ({ task_id: 'task-direct' }) };
+  });
+  api.routeGenerateLocally = true;
+  assert.equal(await api.submit('banana-2', '把字写清楚', ['data:image/png;base64,YQ==']), 'task-direct');
+  assert.deepEqual(urls, ['http://127.0.0.1:17402/media/generate', 'https://api.lk888.ai/v1/media/generate']);
+});
+test('local generate proxy success is a task id and does not fall through', async () => {
+  const urls = [];
+  const api = new MediaClient('test-key', async (url, options) => {
+    urls.push(url);
+    assert.equal(JSON.parse(options.body).payload.model, 'banana-2');
+    return { ok: true, status: 200, json: async () => ({ data: { task_id: 'task-local' } }) };
+  });
+  api.routeGenerateLocally = true;
+  assert.equal(await api.submit('banana-2', '把字写清楚', []), 'task-local');
+  assert.deepEqual(urls, ['http://127.0.0.1:17402/media/generate']);
+});
+test('model rejection stays a terminal failure with the provider reason', async () => {
+  const api = new MediaClient('test-key', async () => ({ ok: false, status: 400, json: async () => ({ error: { message: '模型不存在或当前密钥无权限' } }) }));
+  await assert.rejects(api.submit('banana-2.1', 'edit', ['source']), error => error.terminal === true && /模型不存在或当前密钥无权限/.test(error.message) && !/语音会话|提交状态不确定/.test(error.message));
 });
 
 test('explains LK888 gateway 502 without resubmitting the image task', async () => {

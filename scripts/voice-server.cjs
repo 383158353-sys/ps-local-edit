@@ -1,5 +1,6 @@
 // Loopback-only, on-demand Windows dictation. No audio or transcript is sent online.
 const http = require('node:http');
+const https = require('node:https');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const path = require('node:path');
@@ -40,7 +41,29 @@ function openDropWindow(id) {
 function openAnnotationWindow(id) {
   return spawn('powershell.exe',['-NoProfile','-Sta','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',path.join(__dirname,'annotation-window.ps1'),'-SessionId',id],{windowsHide:false,stdio:'ignore'});
 }
-function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboard, dropWindowLauncher = openDropWindow, annotationWindowLauncher = openAnnotationWindow } = {}) {
+function forwardGenerate(raw) {
+  return new Promise((resolve, reject) => {
+    let parsed;
+    try { parsed = JSON.parse(raw); }
+    catch { reject(new Error('生图请求格式无效。')); return; }
+    const key = typeof parsed.key === 'string' ? parsed.key.trim() : '';
+    const payload = parsed.payload;
+    if (!key || !payload || typeof payload !== 'object' || Array.isArray(payload)) { reject(new Error('生图请求缺少密钥或内容。')); return; }
+    const data = Buffer.from(JSON.stringify(payload));
+    const req = https.request({
+      hostname: 'api.lk888.ai', path: '/v1/media/generate', method: 'POST', timeout: 300000,
+      headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json', 'Content-Length': data.length }
+    }, res => {
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => resolve({ status: res.statusCode || 502, body: Buffer.concat(chunks).toString('utf8') || '{}' }));
+    });
+    req.on('timeout', () => { req.destroy(); reject(new Error('提交生图任务超时。请到平台确认是否已接单，勿重复生成。')); });
+    req.on('error', () => reject(new Error('提交生图任务时网络连接失败。请检查网络；若平台已接单，勿重复生成。')));
+    req.end(data);
+  });
+}
+function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboard, dropWindowLauncher = openDropWindow, annotationWindowLauncher = openAnnotationWindow, generateProxy = forwardGenerate } = {}) {
   let active = null, readiness = { state: 'starting' };
   const sessions = new Map();
   const dropSessions = new Map();
@@ -148,6 +171,26 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
       child.on('exit',()=>{clearTimeout(session.timer);clearTimeout(session.killTimer);clearTimeout(session.stopTimer);if(['starting','listening','stopping'].includes(session.state)){session.state='error';session.message='语音识别意外退出，请检查麦克风后重试。';}if(active===session)active=null;});
       return reply(200,snapshot(session,0));
     }
+    if (url.pathname === '/media/generate' && request.method === 'POST') {
+      let body = '', tooBig = false, answered = false;
+      const fail = (status, message) => { if (answered) return; answered = true; reply(status, {error:{message}}); };
+      request.setEncoding('utf8');
+      request.on('data', chunk => { body += chunk; if (body.length > 72 * 1024 * 1024) { tooBig = true; fail(413, '生图图片过大，请缩小选区或减少参考图后再试。尚未提交。'); request.destroy(); } });
+      request.on('end', () => {
+        if (tooBig) return;
+        Promise.resolve().then(() => generateProxy(body)).then(result => {
+          if (answered) return;
+          answered = true;
+          const status = Number(result && result.status) || 502;
+          const text = typeof result?.body === 'string' ? result.body : JSON.stringify(result && result.body || {});
+          response.writeHead(status, {'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...corsHeaders});
+          response.end(text);
+        }).catch(error => fail(503, error && error.message || '本机转发生图请求失败。'));
+      });
+      request.on('error', () => fail(503, '本机接收生图请求失败。尚未提交。'));
+      return;
+    }
+    if (url.pathname !== '/status' && url.pathname !== '/stop') return reply(404, {message:'本机服务没有这个接口。'});
     const session=sessions.get(url.searchParams.get('id'));
     if(!session) return reply(404,{message:'语音会话已结束，请重新开始。'});
     if(url.pathname==='/status' && request.method==='GET') return reply(200,snapshot(session,Number(url.searchParams.get('cursor'))||0));

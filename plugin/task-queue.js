@@ -19,7 +19,7 @@ class TaskQueue{
   }));
   record.tasks.sort((a,b)=>a.outputIndex-b.outputIndex);
   record.timings.acceptedAt=Date.now();
-  if(failures.length){record.state=failures.some(e=>!e.terminal)?'uncertain':record.tasks.some(t=>t.state==='running')?'running':'failed';record.phase='部分提交失败，请查看原任务';}
+  if(failures.length){record.error=[...new Set(failures.map(e=>e&&e.message).filter(Boolean))].join('；')||'生成提交失败。';record.state=record.tasks.some(t=>t.state==='running')?'running':'failed';record.phase=record.state==='running'?'部分已接单，其余提交失败':'提交失败';}
   else{record.phase='平台生成中';record.state=record.tasks.every(t=>t.state==='ready')?'ready':record.tasks.some(t=>t.state==='running')?'running':'failed';}
   this.save();
  }

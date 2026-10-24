@@ -14,6 +14,14 @@ test('submission content rejection is failed while network ambiguity remains unc
  const queue=new TaskQueue({persist(){},onChange(){},client:async()=>({submit:async()=>{const error=new Error('内容审核拦截');error.terminal=true;throw error;}})});
  const job={id:'one',count:1,tasks:[]};await queue.submit(job,[],{});assert.equal(job.state,'failed');
 });
+test('a submit failure keeps the real reason and does not become an uncertain status',async()=>{
+ const queue=new TaskQueue({persist(){},onChange(){},client:async()=>({submit:async()=>{throw new Error('提交生图任务时网络连接失败或超时。请到平台确认是否已接单，勿重复生成。');}})});
+ const job={id:'one',count:1,model:'banana-2.1',tasks:[]};
+ await queue.submit(job,[],{});
+ assert.equal(job.state,'failed');
+ assert.match(job.error,/网络连接失败或超时/);
+ assert.doesNotMatch(job.error,/提交状态不确定|语音会话/);
+});
 
 test('success with alternate result fields becomes ready without placing layers',async()=>{
  const job={state:'running',tasks:[{id:'task',state:'running',results:[]}]};

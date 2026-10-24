@@ -282,7 +282,7 @@ function renderTasks(){
   });
  });
  if(total && record.state!=='submitting'&&!record.tasks.some(t=>t.state==='running'))notice(record.hasSelection===false?'生成完成，点击候选图添加完整图层，或保存原图。':'生成完成，点击候选图添加图层。');
- else if(record.state!=='submitting'&&!record.tasks?.some(t=>t.state==='running'))notice('尚无生成结果。');
+ else if(record.state!=='failed'&&record.state!=='uncertain'&&!record.error&&record.state!=='submitting'&&!record.tasks?.some(t=>t.state==='running'))notice('尚无生成结果。');
 }
 function renumberHistory(){queue.jobs.slice().reverse().forEach((record,index)=>{record.number=index+1;record.title='局部改图 '+(index+1);});}
 async function deleteCaptureFiles(records,includeSharedSelection=false){
@@ -397,12 +397,13 @@ async function generate(){voice.cancel();
  selectedJobId=id;activeSubmissions.add(id);syncInputs();show('selection-gate',false);navigatePage('edit');status('任务已开始提交。面板可以继续操作；提交状态会保存在历史记录中。');
  queue.submit(record,[...(hasSelection?[sourceImage]:[]),...references.map(r=>r.data)],params).then(()=>{
   activeSubmissions.delete(id);refresh();
-  if(selectedJobId===id && record.state==='failed'){status(record.error||'生成失败，未返回图片。',true);return;}
-  if(selectedJobId===id)status(record.state==='uncertain'?'提交状态不确定，请在历史记录中查询原任务。':'已提交。生成在后台继续，可新建另一处改图。',record.state==='uncertain');
+  if(selectedJobId!==id)return;
+  if(record.state==='failed'||record.state==='uncertain'){status(record.error||'生成失败，未返回图片。',true);return;}
+  status('已提交。生成在后台继续，可新建另一处改图。');
   queue.tick();
  }).catch(error=>{
-  activeSubmissions.delete(id);record.state='uncertain';record.error=error.message||'提交状态不确定';queue.save();refresh();
-  if(selectedJobId===id)status(record.error+'；请先查询原任务，避免重复提交。',true);
+  activeSubmissions.delete(id);record.state='failed';record.error=error.message||'生成提交失败。';queue.save();refresh();
+  if(selectedJobId===id)status(record.error,true);
  });
 }
 async function openHistory(id){voice.cancel();if(selectedJobId!==id){cancelOptimization();clearOptimizeUndo();await saveCurrent();}const record=queue.jobs.find(j=>j.id===id);if(!record)return;record.closed=false;historyOpen=false;clearHistoryArmed=false;selectedJobId=id;tasksUI();try{capture=record.hasSelection===false?null:await restoreCapture(record.captureRef);}catch(_){capture=null;}sourceImage=capture?.sourceImage||null;references=capture?.references||[];if(record.hasSelection===false){try{references=await restoreReferences(record.captureRef||record.id);}catch(_){references=[];}}if(!sourceImage && capture){try{const folder=await fs.getDataFolder(),meta=JSON.parse(await(await folder.getEntry('selection.json')).read());if(meta.context.documentId===capture.context.documentId && JSON.stringify(meta.bounds)===JSON.stringify(capture.bounds))sourceImage=meta.sourceImage;}catch(_){}}$('prompt').value=record.prompt;promptEditor?.resize();$('model').value=record.model;$('quality').value=record.quality||'auto';$('output-size').value=record.ratio||'original';$('count').value=String(record.count||1);show('selection-gate',false);navigatePage('edit');syncInputs();status(sourceImage?'已恢复当时的选区输入。结果完成后点击图片添加图层。':record.hasSelection===false?'已恢复图片和提示词，可继续生成；结果可添加为完整图层。':'旧记录未保存输入缩略图；提示词和结果已恢复。');}
