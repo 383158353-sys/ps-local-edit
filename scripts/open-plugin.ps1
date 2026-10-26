@@ -21,6 +21,7 @@ try {
     function Get-DropOverlayText {
         try {
             $taskReq = [System.Net.HttpWebRequest]::Create('http://127.0.0.1:17402/drop/overlay')
+            $taskReq.Proxy = $null
             $taskReq.Method = 'GET'
             $taskReq.Timeout = 800
             $taskReq.Headers.Add('X-PS-Local-Voice', '1')

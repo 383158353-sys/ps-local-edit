@@ -89,6 +89,17 @@ test('dropping UXP and browser files adds numbered reference images',async()=>{
  await h.nodes['capture-selection'].click();
  assert.equal(h.nodes['reference-thumbs'].children.length,2);
 });
+test('an Explorer drag that only exposes text/plain still lands one reference via the overlay',async()=>{
+ const h=harness({dropQueue:[[{name:'本地.png',data:'data:image/png;base64,YWJj'}]]});await h.ready();
+ const enter=h.nodes['images-row'].dragover({preventDefault(){},screenX:12,screenY:24,dataTransfer:{types:['text/plain'],files:[],items:[]}});
+ await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{types:['text/plain'],files:[],items:[],getData(){return '';}}});
+ await enter;
+ await new Promise(resolve=>setTimeout(resolve,80));
+ assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/cover')&&call.options.method==='POST'));
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
+ assert.equal(h.nodes['reference-thumbs'].children.length,1);
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'本地.png');
+});
 test('an empty UXP drop is caught by the overlay and does not open a dialog',async()=>{
  const h=harness({dropQueue:[[{name:'拖入.png',data:'data:image/png;base64,YWJj'}]]});await h.ready();
  const enter=h.nodes['images-row'].dragenter({preventDefault(){},screenX:320,screenY:240,dataTransfer:{types:['Files'],files:[],items:[]}});

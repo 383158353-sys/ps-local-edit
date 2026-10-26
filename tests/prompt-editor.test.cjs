@@ -84,7 +84,7 @@ test('Ctrl+V followed by a paste event inserts clipboard content exactly once',a
   let reads=0;const h=fixture({clipboard:{getContent:async()=>{reads++;return {'text/plain':'加上'};}}});
   let keyDefaultPrevented=false;h.input.events.keydown({key:'v',ctrlKey:true,stopPropagation(){},preventDefault(){keyDefaultPrevented=true;}});
   h.input.events.paste(pasteEvent());await flush();await new Promise(resolve=>setTimeout(resolve,140));
-  assert.equal(h.input.value,'加上红色花瓶');assert.equal(h.changes.length,1);assert.equal(reads,1);assert.equal(keyDefaultPrevented,false);
+  assert.equal(h.input.value,'加上红色花瓶');assert.equal(h.changes.length,1);assert.equal(reads,1);assert.equal(keyDefaultPrevented,true);
 });
 
 test('Ctrl+V falls back once when UXP does not emit a paste event',async()=>{
@@ -105,6 +105,47 @@ test('dictation inserts at caret without replacing typed prompt',()=>{
   assert.equal(h.input.value,'红色花瓶，保留纹理');h.editor.voice({state:'listening',message:'正在听写'});assert.equal(h.voice.textContent,'⏹ 停止');
 });
 
+test('a native insert that arrives after the clipboard read stays a single paste',async()=>{
+  let release;const h=fixture({clipboard:{getContent:()=>new Promise(resolve=>{release=resolve;})},readImageClipboard:async()=>({})});
+  h.input.value='红';h.input.selectionStart=h.input.selectionEnd=1;
+  h.input.events.keydown({key:'v',ctrlKey:true,stopPropagation(){},preventDefault(){}});
+  h.input.events.paste(pasteEvent());
+  release({'text/plain':'瓶'});
+  await flush();
+  assert.equal(h.input.value,'红瓶');
+  const start=h.input.selectionStart;
+  h.input.value=h.input.value.slice(0,start)+'瓶'+h.input.value.slice(start);
+  h.input.selectionStart=h.input.selectionEnd=start+'瓶'.length;
+  await new Promise(resolve=>setTimeout(resolve,80));
+  assert.equal(h.input.value,'红瓶');
+  assert.equal(h.input.selectionStart,2);
+});
+test('beforeinput after UXP already inserted does not paste a second copy',async()=>{
+  const h=fixture({clipboard:{getContent:async()=>({'text/plain':'瓶'})},readImageClipboard:async()=>({})});
+  h.input.value='红';h.input.selectionStart=h.input.selectionEnd=1;
+  h.input.events.keyup({stopPropagation(){}});
+  h.input.value='红瓶';h.input.selectionStart=h.input.selectionEnd=2;
+  h.input.events.beforeinput({inputType:'insertFromPaste'});
+  h.input.events.input();
+  h.input.events.paste(pasteEvent());
+  await flush();
+  await new Promise(resolve=>setTimeout(resolve,80));
+  assert.equal(h.input.value,'红瓶');
+});
+test('two paste events still leave the clipboard text once',async()=>{
+  const h=fixture();h.input.value='';h.input.selectionStart=h.input.selectionEnd=0;
+  h.input.events.paste(pasteEvent());h.input.events.paste(pasteEvent());
+  await flush();await new Promise(resolve=>setTimeout(resolve,80));
+  assert.equal(h.input.value,'白色');
+});
+test('pasting the word already before the caret still inserts one more copy',async()=>{
+  const h=fixture({clipboard:{getContent:async()=>({'text/plain':'红色'})},readImageClipboard:async()=>({})});
+  h.input.selectionStart=h.input.selectionEnd=2;
+  h.input.events.keyup({stopPropagation(){}});
+  h.input.events.paste(pasteEvent());
+  await flush();await new Promise(resolve=>setTimeout(resolve,360));
+  assert.equal(h.input.value,'红色红色花瓶');
+});
 test('context-menu paste inserts text once without a separate paste button',async()=>{
   const h=fixture();h.input.selectionStart=h.input.selectionEnd=2;const event=pasteEvent();h.input.events.paste(event);await flush();
   assert.equal(event.prevented,true);assert.equal(h.input.value,'红色白色花瓶');assert.equal(h.changes.length,1);
