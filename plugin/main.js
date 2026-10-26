@@ -37,7 +37,7 @@ async function optimizePrompt(){
   const capacity=sourceImage?5:6;
   if(references.length+incoming.length>capacity)throw new Error('回传图片超过 PS 数量限制；提示词和图片未更新，请减少参考图后再优化。');
   if(incoming.some(image=>typeof image?.data!=='string'||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(image.data)))throw new Error('回传图片格式无效或过大；提示词和图片未更新。');
-  lastPromptBeforeOptimize={context,text:original};applyingOptimizedPrompt=true;$('prompt').value=result.prompt||'';promptEditor.changed();applyingOptimizedPrompt=false;
+  lastPromptBeforeOptimize={context,text:original};applyingOptimizedPrompt=true;$('prompt').value=result.prompt||'';promptEditor.changed();promptEditor.remember();applyingOptimizedPrompt=false;
   let added=0;for(const image of (Array.isArray(result.images)?result.images:[])){const data=typeof image?.data==='string'?image.data:'';if(!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(data))continue;references.push({name:String(image.name||`影词魔方图片${references.length+1}.png`).slice(0,150),data});added++;}
   syncInputs();await saveCurrent();show('undo-optimize',true,'inline-block');undoOptimizeTimer=setTimeout(clearOptimizeUndo,10000);status(added?`已优化并回传，新增 ${added} 张参考图。现在可点击生成。`:'已优化并回传。现在可点击生成；可按 Ctrl+Z 撤销提示词。');
  }catch(error){if(epoch===optimizeEpoch&&!/已取消优化/.test(error.message||''))status(error.message||'优化失败。',true);}
@@ -45,10 +45,10 @@ async function optimizePrompt(){
 }
 async function undoOptimization(){
  if(!lastPromptBeforeOptimize||lastPromptBeforeOptimize.context!==selectedJobId)return;
- const value=lastPromptBeforeOptimize.text;clearOptimizeUndo();applyingOptimizedPrompt=true;$('prompt').value=value;promptEditor.changed();applyingOptimizedPrompt=false;await saveCurrent();status('已恢复优化前的修改要求。');
+ const value=lastPromptBeforeOptimize.text;clearOptimizeUndo();applyingOptimizedPrompt=true;$('prompt').value=value;promptEditor.changed();promptEditor.remember();applyingOptimizedPrompt=false;await saveCurrent();status('已恢复优化前的修改要求。');
 }
 async function saveCurrent(){const record=queue?.jobs.find(j=>j.id===selectedJobId);if(!record)return;record.prompt=$('prompt').value;record.model=$('model').value||record.model;record.quality=$('quality').value||'auto';record.ratio=$('output-size').value||'original';record.count=Number($('count').value)||1;record.hasSelection=Boolean(capture&&sourceImage);if(capture&&sourceImage){await snapshot(record.captureRef);record.captureWidth=capture.bounds.width;record.captureHeight=capture.bounds.height;}else await snapshotReferences(record.captureRef||record.id);queue.save();}
-async function newDraft(){voice.cancel();cancelOptimization();clearOptimizeUndo();await saveCurrent();const number=Math.max(0,...queue.jobs.map(j=>j.number||0))+1,id=nextLocalId();queue.jobs.unshift({id,captureRef:id,title:'局部改图 '+number,number,createdAt:Date.now(),state:'draft',tasks:[],prompt:'',count:1,hasSelection:false});selectedJobId=id;capture=null;sourceImage=null;references=[];$('prompt').value='';promptEditor?.resize();queue.save();show('selection-gate',true);navigatePage('edit');syncInputs();status('可读取选区做局部改图，也可直接上传图片或输入提示词生成。');}
+async function newDraft(){voice.cancel();cancelOptimization();clearOptimizeUndo();await saveCurrent();const number=Math.max(0,...queue.jobs.map(j=>j.number||0))+1,id=nextLocalId();queue.jobs.unshift({id,captureRef:id,title:'局部改图 '+number,number,createdAt:Date.now(),state:'draft',tasks:[],prompt:'',count:1,hasSelection:false});selectedJobId=id;capture=null;sourceImage=null;references=[];$('prompt').value='';promptEditor?.remember();promptEditor?.resize();queue.save();show('selection-gate',true);navigatePage('edit');syncInputs();status('可读取选区做局部改图，也可直接上传图片或输入提示词生成。');}
 const fs = storage.localFileSystem;
 let capture = null, reference = null, busy = false, busyEpoch = 0, busyTimer = null, selectionEpoch = 0, initialized = false;
 function busyTimeoutMs(){const override=typeof globalThis!=='undefined'?Number(globalThis.__lk888BusyTimeoutMs):NaN;return override>0?override:45000;}
@@ -309,18 +309,18 @@ async function deleteSelectedHistory(){
  const removedCurrent=records.some(record=>record.id===selectedJobId);
  queue.jobs=queue.jobs.filter(record=>!historySelectedIds.has(record.id));
  historySelectedIds.clear();historySelectionMode=false;historyDeleteArmed=false;clearHistoryArmed=false;
- if(removedCurrent){selectedJobId=null;capture=null;sourceImage=null;references=[];$('prompt').value='';show('selection-gate',true);syncInputs();}
+ if(removedCurrent){selectedJobId=null;capture=null;sourceImage=null;references=[];$('prompt').value='';promptEditor?.remember();show('selection-gate',true);syncInputs();}
  renumberHistory();queue.save();await deleteCaptureFiles(records);tasksUI();status('已删除所选 '+records.length+' 条本机记录；平台任务不受影响。');
 }
 async function clearHistory(){
  const records=queue.jobs.slice();queue.jobs=[];selectedJobId=null;historyOpen=false;clearHistoryArmed=false;historySelectionMode=false;historyDeleteArmed=false;historySelectedIds.clear();documentTabRowOffset=0;
  queue.save();localStorage.removeItem('lk888-job');localStorage.removeItem('lk888-last-result');localStorage.removeItem('lk888-prompt');job=null;
- await deleteCaptureFiles(records,true);voice.cancel();capture=null;sourceImage=null;references=[];$('prompt').value='';
+ await deleteCaptureFiles(records,true);voice.cancel();capture=null;sourceImage=null;references=[];$('prompt').value='';promptEditor?.remember();
  show('selection-gate',true);navigatePage('edit');syncInputs();status('本机历史已清空；下一处改图从 1 开始。已提交的平台任务不会因此取消。');
 }
 async function deleteHistoryRecord(id){
  const record=queue.jobs.find(j=>j.id===id);if(!record)return;
- queue.jobs=queue.jobs.filter(j=>j.id!==id);if(selectedJobId===id){selectedJobId=null;capture=null;sourceImage=null;references=[];$('prompt').value='';show('selection-gate',true);syncInputs();}historySelectedIds.delete(id);clearHistoryArmed=false;historyDeleteArmed=false;renumberHistory();queue.save();
+ queue.jobs=queue.jobs.filter(j=>j.id!==id);if(selectedJobId===id){selectedJobId=null;capture=null;sourceImage=null;references=[];$('prompt').value='';promptEditor?.remember();show('selection-gate',true);syncInputs();}historySelectedIds.delete(id);clearHistoryArmed=false;historyDeleteArmed=false;renumberHistory();queue.save();
  await deleteCaptureFiles([record]);
  tasksUI();status('已删除本机历史记录。已提交的平台任务不会因此取消。');
 }
@@ -400,7 +400,7 @@ async function generate(){voice.cancel();
  if(hasSelection&&!selectionMatchesOpenDocument(app.activeDocument))throw new Error('请读取当前文档选区。');
  const configuredRatio=$('output-size').value||'original',selection=hasSelection?capture.context.originalBounds:null;
  const ratio=configuredRatio==='original'?(selection?closestStandardAspect(selection.right-selection.left,selection.bottom-selection.top):'original'):configuredRatio;
- if(hasSelection&&capture.aspectRatio&&capture.aspectRatio!==ratio){await readSelection(ratio,true);$('prompt').value=prompt;}
+ if(hasSelection&&capture.aspectRatio&&capture.aspectRatio!==ratio){await readSelection(ratio,true);$('prompt').value=prompt;promptEditor?.remember();}
  const selectedModel=$('model').value || modelList[0]?.id,model=selectedModel==='custom'?$('custom-model').value.trim():selectedModel;if(!model)throw new Error(selectedModel==='custom'?'请先在设置里填写自定义模型 ID。':'请选择模型。');
  const params={},qualityChoice=$('quality').value||'auto',quality=qualityChoice==='auto'?(selection?closestStandardImageSize(selection.right-selection.left,selection.bottom-selection.top):'1K'):qualityChoice;params.image_size=quality;if(ratio!=='original'&&(!hasSelection||capture.aspectRatioMatched!==false))params.aspect_ratio=ratio;
  const existing=queue.jobs.find(j=>j.id===selectedJobId),number=existing?.state==='draft'?existing.number:Math.max(0,...queue.jobs.map(j=>j.number||0))+1,id=existing?.state==='draft'?existing.id:nextLocalId();
@@ -420,7 +420,7 @@ async function generate(){voice.cancel();
   if(selectedJobId===id)status(record.error,true);
  });
 }
-async function openHistory(id){voice.cancel();if(selectedJobId!==id){cancelOptimization();clearOptimizeUndo();await saveCurrent();}const record=queue.jobs.find(j=>j.id===id);if(!record)return;record.closed=false;historyOpen=false;clearHistoryArmed=false;selectedJobId=id;tasksUI();try{capture=record.hasSelection===false?null:await restoreCapture(record.captureRef);}catch(_){capture=null;}sourceImage=capture?.sourceImage||null;references=capture?.references||[];if(record.hasSelection===false){try{references=await restoreReferences(record.captureRef||record.id);}catch(_){references=[];}}if(!sourceImage && capture){try{const folder=await fs.getDataFolder(),meta=JSON.parse(await(await folder.getEntry('selection.json')).read());if(meta.context.documentId===capture.context.documentId && JSON.stringify(meta.bounds)===JSON.stringify(capture.bounds))sourceImage=meta.sourceImage;}catch(_){}}$('prompt').value=record.prompt;promptEditor?.resize();$('model').value=record.model;$('quality').value=record.quality||'auto';$('output-size').value=record.ratio||'original';$('count').value=String(record.count||1);show('selection-gate',false);navigatePage('edit');syncInputs();status(sourceImage?'已恢复当时的选区输入。结果完成后点击图片添加图层。':record.hasSelection===false?'已恢复图片和提示词，可继续生成；结果可添加为完整图层。':'旧记录未保存输入缩略图；提示词和结果已恢复。');}
+async function openHistory(id){voice.cancel();if(selectedJobId!==id){cancelOptimization();clearOptimizeUndo();await saveCurrent();}const record=queue.jobs.find(j=>j.id===id);if(!record)return;record.closed=false;historyOpen=false;clearHistoryArmed=false;selectedJobId=id;tasksUI();try{capture=record.hasSelection===false?null:await restoreCapture(record.captureRef);}catch(_){capture=null;}sourceImage=capture?.sourceImage||null;references=capture?.references||[];if(record.hasSelection===false){try{references=await restoreReferences(record.captureRef||record.id);}catch(_){references=[];}}if(!sourceImage && capture){try{const folder=await fs.getDataFolder(),meta=JSON.parse(await(await folder.getEntry('selection.json')).read());if(meta.context.documentId===capture.context.documentId && JSON.stringify(meta.bounds)===JSON.stringify(capture.bounds))sourceImage=meta.sourceImage;}catch(_){}}$('prompt').value=record.prompt;promptEditor?.remember();promptEditor?.resize();$('model').value=record.model;$('quality').value=record.quality||'auto';$('output-size').value=record.ratio||'original';$('count').value=String(record.count||1);show('selection-gate',false);navigatePage('edit');syncInputs();status(sourceImage?'已恢复当时的选区输入。结果完成后点击图片添加图层。':record.hasSelection===false?'已恢复图片和提示词，可继续生成；结果可添加为完整图层。':'旧记录未保存输入缩略图；提示词和结果已恢复。');}
 async function candidateAction(data){const record=queue.jobs.find(j=>j.id===data.jobId),task=record?.tasks.find(t=>t.id===data.taskId),result=task?.results[data.index];if(!result)throw new Error('结果不存在。');
  const {buffer,ext}=await download(result.source);
  if(data.type==='preview'){const folder=await fs.getTemporaryFolder(),file=await folder.createFile('preview-'+task.id+'-'+data.index+'.'+ext,{overwrite:true});await file.write(buffer,{format:storage.formats.binary});const error=await shell.openPath(file.nativePath);if(error)throw new Error(error);status('已在系统图片查看器打开原尺寸结果。');return;}
@@ -497,7 +497,7 @@ async function readSelection(aspectOverride, preserveCurrent = false) {
     const keptPrompt=$('prompt').value,keptReferences=references.slice();
     await newDraft();
     if(epoch!==selectionEpoch)return;
-    references=keptReferences;$('prompt').value=keptPrompt;promptEditor?.resize();
+    references=keptReferences;$('prompt').value=keptPrompt;promptEditor?.remember();promptEditor?.resize();
   }
   if (previousCapture && previousCapture.imageData && previousCapture.imageData.imageData){try{previousCapture.imageData.imageData.dispose();}catch(_){}}
   capture=nextCapture;
@@ -783,7 +783,7 @@ async function pollArmedDrop(arm){
   const expires=arm.at+8000;
   while(arm.token===dropPollToken&&!arm.done&&Date.now()<expires){
     if(arm.expecting&&!arm.dropAt)arm.dropAt=Date.now();
-    if(arm.dropAt&&Date.now()-arm.dropAt>3500)break;
+    if(arm.dropAt&&Date.now()-arm.dropAt>7000)break;
     try{
       const response=await voice.request('/drop/poll?id='+encodeURIComponent(arm.id));
       if(arm.token!==dropPollToken||arm.done)return;
@@ -826,9 +826,13 @@ async function armDropOverlay(event){
 function dragLooksLikeFiles(event){
   const types=event&&event.dataTransfer&&event.dataTransfer.types;
   if(!types)return true;
-  const list=Array.from(types).map(type=>String(type).toLowerCase());
+  const list=typeof types==='string'?[types]:Array.from(types);
   if(!list.length)return true;
-  return list.some(type=>type==='files'||type.includes('file')||type==='text/uri-list'||type==='application/x-moz-file');
+  // Explorer drags often arrive in UXP as text/plain or text/uri-list, with no Files entry.
+  return list.some(type=>{
+    const name=String(type||'').toLowerCase();
+    return name==='files'||name.includes('file')||name==='text/uri-list'||name==='text/plain'||name==='text'||name==='url'||name==='application/x-moz-file';
+  });
 }
 function unresolvedDrop(target){
   if(dropArm&&dropArm.done)return;

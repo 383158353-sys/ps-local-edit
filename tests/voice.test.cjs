@@ -120,6 +120,15 @@ test('local drop window sends images into the panel polling queue',async()=>{
     const bad=await fetch(base+'/drop/upload?id='+opened.id,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({references:[{name:'x',data:'file:///secret'}]})});assert.equal(bad.status,400);
   }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
+test('drop overlay stays an opaque window so Explorer can hand it files',()=>{
+  const source=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','scripts','drop-overlay.ps1'),'utf8');
+  assert.doesNotMatch(source,/Opacity\s*=/);
+  assert.doesNotMatch(source,/WS_EX_TRANSPARENT|0x00000020/);
+  assert.match(source,/AllowDrop\s*=\s*\$true/);
+  assert.match(source,/\$req\.Proxy\s*=\s*\$null/);
+  assert.match(source,/X-PS-Local-Voice/);
+  assert.match(source,/DragDrop/);
+});
 test('drop cover arms the overlay and never opens the titled drop window',async()=>{
   const windows=[];const overlays=[];
   const server=createVoiceServer({spawnWorker:()=>{const child=fakeChild();setImmediate(()=>child.emit('exit',0));return child;},dropWindowLauncher:id=>{windows.push(id);return fakeChild();},overlayLauncher:()=>{const child=fakeChild();overlays.push(child);return child;}});
