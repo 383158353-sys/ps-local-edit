@@ -6,26 +6,21 @@ function node(value=''){
   return {value,selectionStart:0,selectionEnd:0,events:{},addEventListener(name,fn){this.events[name]=fn;},focus(){this.focused=true;}};
 }
 function fixture(options={}){
-  const input=node('红色花瓶'),voice=node(),expand=node(),classes=new Set();
+  const input=node('红色花瓶'),expand=node(),classes=new Set();
   const container={classList:{contains:name=>classes.has(name),toggle(name,force){if(force)classes.add(name);else classes.delete(name);}}};
   expand.setAttribute=(name,value)=>{expand[name]=value;};
   const changes=[],images=[],notices=[];
-  const editor=new PromptEditor({node:input,voiceButton:voice,expandButton:expand,container,clipboard:{getContent:async()=>({'text/plain':'白色'})},onChange:text=>changes.push(text),onImage:image=>images.push(image),onNotice:(...args)=>notices.push(args),onVoice:()=>{},readImageClipboard:async()=>({}),...options});
-  return {editor,input,voice,expand,container,changes,images,notices};
+  const editor=new PromptEditor({node:input,expandButton:expand,container,clipboard:{getContent:async()=>({'text/plain':'白色'})},onChange:text=>changes.push(text),onImage:image=>images.push(image),onNotice:(...args)=>notices.push(args),readImageClipboard:async()=>({}),...options});
+  return {editor,input,expand,container,changes,images,notices};
 }
 function pasteEvent(clipboardData={}){
   return {clipboardData,prevented:false,stopped:false,preventDefault(){this.prevented=true;},stopPropagation(){this.stopped=true;}};
 }
 async function flush(){await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));}
 
-test('voice session text stays hidden until dictation is started',()=>{
+test('voice feature is removed and PromptEditor has no voice method',()=>{
   const h=fixture();
-  h.editor.voice({state:'error',message:'语音会话已结束，请重新开始。'});
-  h.editor.voice({state:'idle',message:'语音会话已结束，请重新开始。'});
-  assert.equal(h.voice.textContent,'🎙 语音');
-  assert.deepEqual(h.notices,[]);
-  h.editor.voice({state:'starting',message:'正在启动中文听写…'});
-  assert.deepEqual(h.notices.at(-1),['正在启动中文听写…',false]);
+  assert.equal(typeof h.editor.voice,'undefined');
 });
 test('plain text paste replaces selected words and preserves surrounding prompt',async()=>{
   const h=fixture();h.input.selectionStart=0;h.input.selectionEnd=2;
@@ -100,9 +95,9 @@ test('late paste cannot alter a different region after switching history',async(
   assert.equal(h.input.value,'新的修改');assert.deepEqual(h.changes,[]);
 });
 
-test('dictation inserts at caret without replacing typed prompt',()=>{
+test('insert at caret without replacing typed prompt',()=>{
   const h=fixture();h.input.selectionStart=h.input.selectionEnd=4;h.editor.insert('，保留纹理');
-  assert.equal(h.input.value,'红色花瓶，保留纹理');h.editor.voice({state:'listening',message:'正在听写'});assert.equal(h.voice.textContent,'⏹ 停止');
+  assert.equal(h.input.value,'红色花瓶，保留纹理');
 });
 
 test('a native insert that arrives after the clipboard read stays a single paste',async()=>{

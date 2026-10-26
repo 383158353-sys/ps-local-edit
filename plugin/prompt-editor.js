@@ -1,8 +1,8 @@
 // Native UXP textarea keeps Photoshop keyboard focus out of embedded WebViews.
 class PromptEditor {
-  constructor({node,voiceButton,expandButton,container,clipboard,onChange,onImage,onNotice,onVoice,context=()=>null,readImageClipboard}) {
-    Object.assign(this,{node,voiceButton,expandButton,container,clipboard,onChange,onImage,onNotice,onVoice,context,readImageClipboard});
-    this.busy=false;this.pasting=false;this.voiceState='idle';this.pendingPaste=null;this.pasteSnap=null;this.pasteFallbackTimer=null;this.lastSnap=null;this.pasteEpoch=0;this.pasteFrozen=false;
+  constructor({node,expandButton,container,clipboard,onChange,onImage,onNotice,context=()=>null,readImageClipboard}) {
+    Object.assign(this,{node,expandButton,container,clipboard,onChange,onImage,onNotice,context,readImageClipboard});
+    this.busy=false;this.pasting=false;this.pendingPaste=null;this.pasteSnap=null;this.pasteFallbackTimer=null;this.lastSnap=null;this.pasteEpoch=0;this.pasteFrozen=false;
     node.addEventListener('input',()=>this.changed());
     node.addEventListener('beforeinput',event=>{
       if(event.inputType!=='insertFromPaste'&&event.inputType!=='insertFromPasteAsQuotation')return;
@@ -32,8 +32,6 @@ class PromptEditor {
     node.addEventListener('mouseup',()=>this.remember());
     this.remember();
     node.addEventListener('paste',event=>this.handlePaste(event));
-    voiceButton.addEventListener('mousedown',event=>event.preventDefault());
-    voiceButton.addEventListener('click',()=>{if(!this.busy)this.onVoice(['starting','listening','stopping'].includes(this.voiceState)?'stop':'start');});
     if(expandButton){
       expandButton.addEventListener('mousedown',event=>event.preventDefault());
       expandButton.addEventListener('click',()=>this.setExpanded(!this.container?.classList?.contains('expanded')));
@@ -190,7 +188,7 @@ class PromptEditor {
   }
   setBusy(busy){
     if(this.busy===busy)return;this.busy=busy;
-    this.node.readOnly=busy;this.voiceButton.disabled=busy;if(this.expandButton)this.expandButton.disabled=busy;
+    this.node.readOnly=busy;if(this.expandButton)this.expandButton.disabled=busy;
   }
   insert(value){
     if(this.busy||typeof value!=='string')return;
@@ -255,16 +253,6 @@ class PromptEditor {
       throw bridgeError||new Error('剪贴板中没有图片，请先复制截图或图片文件。');
     }catch(error){this.onNotice(error.message||'粘贴图片失败。',true);}
     finally{this.pasting=false;}
-  }
-  voice(data){
-    const live=['starting','listening','stopping'].includes(data.state);
-    if(live)this.voiceEngaged=true;
-    this.voiceState=data.state;
-    this.voiceButton.textContent=live?'⏹ 停止':'🎙 语音';
-    // Idle cancel and leftover session errors must not appear when dictation was never started.
-    if(!this.voiceEngaged)return;
-    this.onNotice(data.message||'',data.state==='error');
-    if(data.state==='idle'||data.state==='complete')this.voiceEngaged=false;
   }
 }
 module.exports={PromptEditor};

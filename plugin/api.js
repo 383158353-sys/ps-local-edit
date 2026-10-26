@@ -45,30 +45,15 @@ function imageSources(payload) {
 class MediaClient {
   constructor(key, fetchImpl = fetch) {
     this.key = key; this.fetch = fetchImpl; this.base = 'https://api.lk888.ai';
-    // Generation goes to LK888 directly. The local helper is optional and, when it is
-    // closed, its 404 is the voice-session sentence. Do not send generate there.
-    this.routeGenerateLocally = false;
   }
   async request(path, body) {
-    const local = path === '/v1/media/generate' && this.routeGenerateLocally;
-    try { return await this.requestOnce(path, body, local); }
-    catch (error) {
-      // An old local helper has no generate route and answers with the voice-session 404.
-      // That request never reached the platform, so one direct submit is safe.
-      if (error.localRouteMissing) return this.requestOnce(path, body, false);
-      throw error;
-    }
-  }
-  async requestOnce(path, body, localSubmission) {
     const controller = new AbortController();
-    // Uploading selection/reference PNGs and accepting a generation can exceed a minute.
-    // A timed-out submission must never be retried automatically.
     const timer = setTimeout(() => controller.abort(), path.startsWith('/v1/media/generate') ? 300000 : 60000);
     try {
-      const response = await this.fetch(localSubmission?'http://127.0.0.1:17402/media/generate':this.base + path, {
+      const response = await this.fetch(this.base + path, {
         method: body ? 'POST' : 'GET', signal: controller.signal,
-        headers: localSubmission?{'X-PS-Local-Voice':'1','Content-Type':'application/json'}:{ Authorization: 'Bearer ' + this.key, 'Content-Type': 'application/json' },
-        ...(body ? { body: JSON.stringify(localSubmission?{key:this.key,payload:body}:body) } : {})
+        headers: { Authorization: 'Bearer ' + this.key, 'Content-Type': 'application/json' },
+        ...(body ? { body: JSON.stringify(body) } : {})
       });
       let payload;
       try { payload = await response.json(); } catch (_) { throw new Error('平台返回了无法识别的响应。'); }
@@ -76,11 +61,6 @@ class MediaClient {
         payload = unwrap(payload)?.error ? unwrap(payload) : payload;
         const error = payload.error;
         const failure=new Error(providerError(payload,response.status));
-        if (localSubmission && /语音会话已结束|未知语音请求|本机服务没有这个接口/.test(failure.message)) {
-          const missed=new Error('本机助手还没有生图接口。');
-          missed.localRouteMissing=true;
-          throw missed;
-        }
         if (response.status === 502) throw new Error('LK888 上游模型返回 502，模型暂不可用或平台请求超时。请稍后重试，并先在 LK888 确认任务状态，避免重复提交。'+(error?.message?' 原因：'+error.message:''));
         if (/PROHIBITED_CONTENT|content_policy|safety.*block|内容.*(?:拦截|阻止|策略)/i.test(JSON.stringify(payload))){failure.terminal=true;failure.code='PROHIBITED_CONTENT';failure.message='生成失败：上游内容审核拦截（PROHIBITED_CONTENT），未返回图片。'+(/退款|refund/i.test(JSON.stringify(payload))?' 平台提示已退款。':'')+' 请检查输入图片与提示词，按平台规则调整后再生成。';}
         else if ([400,401,403,404,422,503].includes(Number(response.status))) failure.terminal=true;
@@ -88,10 +68,9 @@ class MediaClient {
       }
       return payload;
     } catch (error) {
-      if (error.localRouteMissing) throw error;
       const phase = path.startsWith('/v1/media/generate') ? '提交生图任务' : path.startsWith('/v1/media/status') ? '查询原任务' : '检查连接';
       if (/network|fetch|abort|timeout/i.test(error.message || '') || error.name === 'AbortError') {
-        const failure=new Error(phase + '时网络连接失败或超时。' + (body ? '请到平台确认是否已接单，勿重复生成。' : '可再次查询，不会重复提交生图任务。'));
+        const failure=new Error(phase + '时网络连接失败或超时。' + (body ? '提交结果不确定，请到平台确认任务，勿重复生成。' : '可再次查询，不会重复提交生图任务。'));
         failure.terminal=!!body;
         throw failure;
       }
