@@ -1,19 +1,25 @@
 // Native UXP textarea keeps Photoshop keyboard focus out of embedded WebViews.
 class PromptEditor {
-  constructor({node,voiceButton,expandButton,container,clipboard,onChange,onImage,onNotice,onVoice,context=()=>null,readImageClipboard}) {
-    Object.assign(this,{node,voiceButton,expandButton,container,clipboard,onChange,onImage,onNotice,onVoice,context,readImageClipboard});
-    this.busy=false;this.pasting=false;this.voiceState='idle';this.pendingPaste=null;this.pasteSnap=null;this.pasteFallbackTimer=null;
+  constructor({node,expandButton,container,clipboard,onChange,onImage,onNotice,context=()=>null,readImageClipboard}) {
+    Object.assign(this,{node,expandButton,container,clipboard,onChange,onImage,onNotice,context,readImageClipboard});
+    this.busy=false;this.pasting=false;this.pendingPaste=null;this.pasteSnap=null;this.pasteFallbackTimer=null;this.lastSnap=null;this.pasteEpoch=0;this.pasteFrozen=false;
     node.addEventListener('input',()=>this.changed());
     node.addEventListener('beforeinput',event=>{
-      if(event.inputType==='insertFromPaste'||event.inputType==='insertFromPasteAsQuotation')this.pasteSnap=this.captureSelection();
+      if(event.inputType!=='insertFromPaste'&&event.inputType!=='insertFromPasteAsQuotation')return;
+      // UXP may deliver beforeinput after the textarea already contains the paste.
+      // Keep the earlier snapshot so a second insert does not double the text.
+      this.pasteFrozen=true;
+      if(!this.pasteSnap)this.pasteSnap=this.captureSelection();
     });
     node.addEventListener('keydown',event=>{
       event.stopPropagation();
       if(event.key==='Escape'&&this.container?.classList?.contains('expanded')){event.preventDefault();this.setExpanded(false);return;}
-      if((event.ctrlKey||event.metaKey)&&String(event.key).toLowerCase()==='v'){
-        // Remember the field before Photoshop inserts. Some UXP builds still
-        // paste natively after preventDefault, and inserting again doubles the text.
-        const pending=this.captureSelection();this.pasteSnap=pending;this.pendingPaste=pending;
+      if((event.ctrlKey||event.metaKey)&&!event.altKey&&String(event.key).toLowerCase()==='v'){
+        // Ask the host not to insert. UXP often does anyway, so the snapshot is
+        // the pre-paste field and a short watch collapses a late native copy.
+        event.preventDefault();
+        const pending=this.captureSelection();
+        this.pasteFrozen=true;this.lastSnap=pending;this.pasteSnap=pending;this.pendingPaste=pending;
         clearTimeout(this.pasteFallbackTimer);
         this.pasteFallbackTimer=setTimeout(()=>{
           if(this.pendingPaste!==pending)return;
@@ -22,10 +28,10 @@ class PromptEditor {
         },120);
       }
     });
-    node.addEventListener('keyup',event=>event.stopPropagation());
+    node.addEventListener('keyup',event=>{event.stopPropagation();this.remember();});
+    node.addEventListener('mouseup',()=>this.remember());
+    this.remember();
     node.addEventListener('paste',event=>this.handlePaste(event));
-    voiceButton.addEventListener('mousedown',event=>event.preventDefault());
-    voiceButton.addEventListener('click',()=>{if(!this.busy)this.onVoice(['starting','listening','stopping'].includes(this.voiceState)?'stop':'start');});
     if(expandButton){
       expandButton.addEventListener('mousedown',event=>event.preventDefault());
       expandButton.addEventListener('click',()=>this.setExpanded(!this.container?.classList?.contains('expanded')));
@@ -69,39 +75,120 @@ class PromptEditor {
     const end=Number.isFinite(node.selectionEnd)?node.selectionEnd:start;
     return {value,start,end,context:this.context()};
   }
+  remember(){if(this.pasteFrozen||this.reconciling)return;this.lastSnap=this.captureSelection();}
+  // True when `edited` is `base` with text inserted or a selection replaced, which is
+  // what a native paste looks like. A prompt loaded from history is not that shape.
+  priorSnapshot(live){
+    const older=this.lastSnap;
+    if(!older||older.context!==live.context||older.value===live.value)return null;
+    const a=older.value||'', b=live.value||'';
+    const start=Math.min(older.start??0,older.end??0), end=Math.max(older.start??0,older.end??0);
+    if(start>a.length||end>a.length)return null;
+    const suffix=a.length-end;
+    if(b.length<start+suffix)return null;
+    if(b.slice(0,start)!==a.slice(0,start))return null;
+    if(suffix&&b.slice(b.length-suffix)!==a.slice(end))return null;
+    if(b.length===a.length-(end-start))return null;
+    return older;
+  }
+  baseSnap(){
+    const live=this.captureSelection();
+    const marked=this.pasteSnap&&this.pasteSnap.context===live.context?this.pasteSnap:null;
+    if(marked&&marked.value!==live.value)return marked;
+    const older=this.priorSnapshot(live);
+    if(older)return older;
+    if(marked)return {...marked,start:live.start,end:live.end};
+    return live;
+  }
   restorePrompt(snap){
-    if(!snap)return;
+    if(!snap)return false;
     const node=this.node;
-    if((node.value||'')===snap.value)return;
+    if((node.value||'')===snap.value)return false;
     node.value=snap.value;
     node.selectionStart=snap.start;node.selectionEnd=snap.end;
+    return true;
   }
-  applyClipboardText(snap,value){
-    const text=String(value||'').replace(/\r\n?/g,'\n');
-    if(!text||!snap)return;
-    const node=this.node,current=node.value||'';
+  // UXP can insert the same clipboard text again after preventDefault returns.
+  // Extra copies are removed only when doing so lands exactly on the one paste.
+  collapseExtra(value,once,text){
+    const current=String(value||'').replace(/\r\n?/g,'\n');
+    const target=String(once||'').replace(/\r\n?/g,'\n');
+    const needle=String(text||'').replace(/\r\n?/g,'\n');
+    if(!needle||current===target)return current;
+    const extra=current.length-target.length;
+    if(extra<=0||extra%needle.length!==0)return current;
+    const copies=extra/needle.length;
+    if(copies>4)return current;
+    const visit=(rest,left)=>{
+      if(left===0)return rest===target;
+      let from=0,guard=0;
+      while(from<=rest.length-needle.length&&guard++<12){
+        const idx=rest.indexOf(needle,from);
+        if(idx<0)return false;
+        if(visit(rest.slice(0,idx)+rest.slice(idx+needle.length),left-1))return true;
+        from=idx+1;
+      }
+      return false;
+    };
+    return visit(current,copies)?target:current;
+  }
+  armPasteWatch(token,apply){
+    const watch=()=>{if(this.pasteEpoch===token&&apply())this.changed();};
+    setTimeout(watch,0);setTimeout(watch,40);setTimeout(watch,120);setTimeout(watch,280);
+    setTimeout(()=>{if(this.pasteEpoch!==token)return;this.pasteFrozen=false;this.remember();},320);
+  }
+  holdPrompt(snap){
+    if(!snap)return;
+    this.pasteFrozen=true;
+    const token=++this.pasteEpoch,expected=snap.value;
+    const apply=()=>{
+      if(this.pasteEpoch!==token||snap.context!==this.context())return false;
+      const node=this.node;
+      if((node.value||'')===expected)return false;
+      this.reconciling=true;node.value=expected;node.selectionStart=snap.start;node.selectionEnd=snap.end;this.reconciling=false;
+      return true;
+    };
+    this.armPasteWatch(token,apply);
+  }
+  commitPaste(snap,raw){
+    const text=String(raw||'').replace(/\r\n?/g,'\n');
+    if(!text||!snap||typeof snap.value!=='string')return;
     const once=snap.value.slice(0,snap.start)+text+snap.value.slice(snap.end);
-    if(current===once){node.selectionStart=node.selectionEnd=Math.min(snap.start+text.length,once.length);this.changed();return;}
-    if(current!==snap.value)return;
-    node.selectionStart=snap.start;node.selectionEnd=snap.end;
-    this.insert(text);
+    const caret=Math.min(snap.start+text.length,once.length);
+    this.pasteFrozen=true;
+    const token=++this.pasteEpoch;
+    const apply=()=>{
+      if(this.pasteEpoch!==token||snap.context!==this.context())return false;
+      const node=this.node;
+      const current=String(node.value||'').replace(/\r\n?/g,'\n');
+      if(current===once)return false;
+      const collapsed=this.collapseExtra(current,once,text);
+      const prior=String(snap.value).replace(/\r\n?/g,'\n');
+      if(collapsed!==once&&current!==prior)return false;
+      this.reconciling=true;node.value=once;node.selectionStart=node.selectionEnd=caret;this.reconciling=false;
+      return true;
+    };
+    if(apply())this.changed();
+    this.armPasteWatch(token,apply);
   }
   handlePaste(event){
-    if(this.busy){event.preventDefault();event.stopPropagation();return;}
-    // Snapshot first. UXP may insert the clipboard text while preventDefault runs,
-    // or may already have inserted it; pasteFallback must not add that text again.
-    const snap=this.pasteSnap||this.captureSelection();
+    if(this.busy){event.preventDefault();event.stopPropagation();this.pendingPaste=null;clearTimeout(this.pasteFallbackTimer);this.pasteFallbackTimer=null;this.pasteFrozen=false;return;}
+    // Snapshot before preventDefault. UXP may insert while that call runs, or
+    // after this handler returns; commitPaste keeps only one copy.
+    const snap=this.baseSnap();
     this.pasteSnap=null;
     event.preventDefault();event.stopPropagation();
     this.pendingPaste=null;clearTimeout(this.pasteFallbackTimer);this.pasteFallbackTimer=null;
     if(this.pasting)return;
     const image=this.clipboardImage(event);
-    if(image){this.pasting=true;this.restorePrompt(snap);this.addClipboardImage(image,snap.context).catch(error=>this.onNotice(error.message,true)).finally(()=>{this.pasting=false;});return;}
+    if(image){this.pasting=true;if(this.restorePrompt(snap))this.changed();this.holdPrompt(snap);this.addClipboardImage(image,snap.context).catch(error=>this.onNotice(error.message,true)).finally(()=>{this.pasting=false;});return;}
+    let direct='';try{direct=event.clipboardData&&typeof event.clipboardData.getData==='function'?event.clipboardData.getData('text/plain'):'';}catch(_){direct='';}
+    if(direct){this.commitPaste(snap,direct);return;}
     this.pasteFallback(snap).catch(error=>this.onNotice(error.message||'粘贴失败，请重试。',true));
   }
   setBusy(busy){
     if(this.busy===busy)return;this.busy=busy;
-    this.node.readOnly=busy;this.voiceButton.disabled=busy;if(this.expandButton)this.expandButton.disabled=busy;
+    this.node.readOnly=busy;if(this.expandButton)this.expandButton.disabled=busy;
   }
   insert(value){
     if(this.busy||typeof value!=='string')return;
@@ -111,32 +198,36 @@ class PromptEditor {
     const text=value.replace(/\r\n?/g,'\n').slice(0,Math.max(0,20000-original.length+end-start));
     if(typeof node.setRangeText==='function')node.setRangeText(text,start,end,'end');
     else {node.value=original.slice(0,start)+text+original.slice(end);node.selectionStart=node.selectionEnd=start+text.length;}
-    this.changed();
+    this.changed();this.remember();
   }
   async pasteFallback(expected){
-    if(this.busy||this.pasting)return;this.pasting=true;
+    if(this.pasting)return;
+    if(this.busy){this.pasteFrozen=false;return;}
+    this.pasting=true;
+    const epochAtStart=this.pasteEpoch;
     const snap=expected&&typeof expected==='object'&&typeof expected.value==='string'?expected:this.captureSelection();
     const expectedContext=snap.context??this.context();
+    const keepImage=async image=>{if(this.restorePrompt(snap))this.changed();this.holdPrompt(snap);await this.onImage(image);this.onNotice('截图已添加到参考图。');};
     try{
       if(this.context()!==expectedContext)return;
       let contents={};try{contents=await this.clipboard?.getContent();}catch(_){}
       if(this.context()!==expectedContext||this.busy)return;
       for(const [type,value] of Object.entries(contents||{})){
         if(/^image\/(png|jpeg|webp)$/i.test(type)){
-          if(typeof value==='string'&&value.startsWith('data:image/')){this.restorePrompt(snap);await this.onImage(value);this.onNotice('截图已添加到参考图。');return;}
-          if(value instanceof ArrayBuffer || ArrayBuffer.isView(value)){const bytes=value instanceof ArrayBuffer?new Uint8Array(value):new Uint8Array(value.buffer,value.byteOffset,value.byteLength);const encoded=Array.from(bytes,b=>String.fromCharCode(b)).join('');const mime=type.toLowerCase();this.restorePrompt(snap);await this.onImage('data:'+mime+';base64,'+btoa(encoded));this.onNotice('截图已添加到参考图。');return;}
+          if(typeof value==='string'&&value.startsWith('data:image/')){await keepImage(value);return;}
+          if(value instanceof ArrayBuffer || ArrayBuffer.isView(value)){const bytes=value instanceof ArrayBuffer?new Uint8Array(value):new Uint8Array(value.buffer,value.byteOffset,value.byteLength);const encoded=Array.from(bytes,b=>String.fromCharCode(b)).join('');await keepImage('data:'+type.toLowerCase()+';base64,'+btoa(encoded));return;}
         }
       }
       let data={},bridgeError=null;
       try{data=await this.readImageClipboard();}catch(error){bridgeError=error;}
       if(this.context()!==expectedContext||this.busy)return;
-      if(typeof data.image==='string'){this.restorePrompt(snap);await this.onImage(data.image);this.onNotice('截图已添加到参考图。');return;}
-      if(typeof data.text==='string'&&data.text.length){this.applyClipboardText(snap,data.text);this.onNotice('');return;}
-      if(typeof contents?.['text/plain']==='string'&&contents['text/plain'].length){this.applyClipboardText(snap,contents['text/plain']);this.onNotice('');return;}
+      if(typeof data.image==='string'){await keepImage(data.image);return;}
+      if(typeof data.text==='string'&&data.text.length){this.commitPaste(snap,data.text);this.onNotice('');return;}
+      if(typeof contents?.['text/plain']==='string'&&contents['text/plain'].length){this.commitPaste(snap,contents['text/plain']);this.onNotice('');return;}
       this.onNotice(bridgeError?.message||'剪贴板里没有文字或截图。',!!bridgeError);
       if(typeof this.node.focus==='function')this.node.focus();
     }catch(error){this.onNotice(error.message||'粘贴失败，请重新复制后再试。',true);}
-    finally{this.pasting=false;}
+    finally{this.pasting=false;if(this.pasteEpoch===epochAtStart){this.pasteFrozen=false;this.remember();}}
   }
   async pasteImage(){
     if(this.busy||this.pasting)return;
@@ -162,16 +253,6 @@ class PromptEditor {
       throw bridgeError||new Error('剪贴板中没有图片，请先复制截图或图片文件。');
     }catch(error){this.onNotice(error.message||'粘贴图片失败。',true);}
     finally{this.pasting=false;}
-  }
-  voice(data){
-    const live=['starting','listening','stopping'].includes(data.state);
-    if(live)this.voiceEngaged=true;
-    this.voiceState=data.state;
-    this.voiceButton.textContent=live?'⏹ 停止':'🎙 语音';
-    // Idle cancel and leftover session errors must not appear when dictation was never started.
-    if(!this.voiceEngaged)return;
-    this.onNotice(data.message||'',data.state==='error');
-    if(data.state==='idle'||data.state==='complete')this.voiceEngaged=false;
   }
 }
 module.exports={PromptEditor};

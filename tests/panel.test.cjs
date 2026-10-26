@@ -38,7 +38,7 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
     if (name === 'photoshop') return { app, imaging: { encodeImageData: async () => 'YWJj' }, constants: { DocumentMode: { RGB: 'RGB' } } };
     if (name === 'uxp') return { storage };
     if (name === './modules/ps') return ps;if(name==='./modules/geometry')return require('../plugin/modules/geometry');
-    if(name==='./prompt-editor')return require('../plugin/prompt-editor');if(name==='./voice'){const Base=require('../plugin/voice').VoiceController;return {VoiceController:class extends Base{constructor(options){super({...options,fetchImpl:fetch});}}};}if(name==='./optimizer')return {OptimizerClient:class{cancel(){optimizerCancels++;}optimize(input){optimizerCalls.push(input);if(optimizerDeferred)return new Promise(resolve=>{resolveOptimize=resolve;});return Promise.resolve({prompt:'优化后的修改要求',images:[{name:'影词新增.png',data:'data:image/png;base64,YWJj'}]});}}};if(name==='./task-queue')return {TaskQueue};if(name==='./png')return {pngRGBA};
+    if(name==='./prompt-editor')return require('../plugin/prompt-editor');if(name==='./voice'){const Base=require('../plugin/voice').LocalHelper;return {LocalHelper:class extends Base{constructor(options){super({...options,fetchImpl:fetch});}}};}if(name==='./optimizer')return {OptimizerClient:class{cancel(){optimizerCancels++;}optimize(input){optimizerCalls.push(input);if(optimizerDeferred)return new Promise(resolve=>{resolveOptimize=resolve;});return Promise.resolve({prompt:'优化后的修改要求',images:[{name:'影词新增.png',data:'data:image/png;base64,YWJj'}]});}}};if(name==='./task-queue')return {TaskQueue};if(name==='./png')return {pngRGBA};
     if (name === './modules/fs') return { arrayBufferToBase64:v=>Buffer.from(v).toString('base64'), base64ToArrayBuffer: v => {imageDecodes++;return Uint8Array.from(Buffer.from(v, 'base64')).buffer;} };
     if (name === './api') return { ...api, MediaClient: Client };
     if (name === './model-selection') return require('../plugin/model-selection');
@@ -58,7 +58,7 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
 
 
 test('selection uses lossless PNG and does not submit a task',async()=>{const h=harness();await h.ready();await h.nodes['capture-selection'].click();assert.match(h.nodes.preview.src,/^data:image\/png/);assert.equal(h.requests.length,0);});
-test('optimizer button is left of voice in the panel',()=>{const html=fs.readFileSync('plugin/index.html','utf8');assert.ok(html.indexOf('id="optimize-prompt"')<html.indexOf('id="voice-prompt"'));});
+test('optimizer button is present and voice button is removed',()=>{const html=fs.readFileSync('plugin/index.html','utf8');assert.ok(html.includes('id="optimize-prompt"'));assert.ok(!html.includes('id="voice-prompt"'));});
 test('optimizer maps selection and references in order, fills prompt and supports undo',async()=>{
  const h=harness();await h.ready();await h.nodes['capture-selection'].click();
  await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[{name:'参考.png',size:1,arrayBuffer:async()=>Uint8Array.from([2]).buffer}]}});
@@ -88,6 +88,17 @@ test('dropping UXP and browser files adds numbered reference images',async()=>{
  assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/')));
  await h.nodes['capture-selection'].click();
  assert.equal(h.nodes['reference-thumbs'].children.length,2);
+});
+test('an Explorer drag that only exposes text/plain still lands one reference via the overlay',async()=>{
+ const h=harness({dropQueue:[[{name:'本地.png',data:'data:image/png;base64,YWJj'}]]});await h.ready();
+ const enter=h.nodes['images-row'].dragover({preventDefault(){},screenX:12,screenY:24,dataTransfer:{types:['text/plain'],files:[],items:[]}});
+ await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{types:['text/plain'],files:[],items:[],getData(){return '';}}});
+ await enter;
+ await new Promise(resolve=>setTimeout(resolve,80));
+ assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/cover')&&call.options.method==='POST'));
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
+ assert.equal(h.nodes['reference-thumbs'].children.length,1);
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'本地.png');
 });
 test('an empty UXP drop is caught by the overlay and does not open a dialog',async()=>{
  const h=harness({dropQueue:[[{name:'拖入.png',data:'data:image/png;base64,YWJj'}]]});await h.ready();

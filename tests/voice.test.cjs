@@ -2,57 +2,33 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const {EventEmitter}=require('node:events');
 const {PassThrough}=require('node:stream');
-const {VoiceController}=require('../plugin/voice');
+const {LocalHelper}=require('../plugin/voice');
 const {createVoiceServer}=require('../scripts/voice-server.cjs');
 const response=(data,ok=true)=>({ok,json:async()=>data});
-test('dictation inserts each phrase once and ends without another API call',async()=>{
-  const texts=[],states=[],paths=[];let queries=0;
-  const controller=new VoiceController({onText:t=>texts.push(t),onState:s=>states.push(s.state),fetchImpl:async(url,options)=>{
-    paths.push(new URL(url).pathname);assert.equal(options.headers['X-PS-Local-Voice'],'1');
-    if(url.endsWith('/health'))return response({state:'ready'});
-    if(url.endsWith('/start'))return response({id:'session'});
-    return response({state:++queries===1?'listening':'complete',events:[{seq:1,text:'把花瓶改为白色'}]});
-  }});
-  await controller.start();clearTimeout(controller.timer);await controller.poll(controller.epoch);
-  assert.deepEqual(texts,['把花瓶改为白色']);assert.equal(controller.session,null);assert.equal(states.at(-1),'complete');
-  assert.ok(paths.every(p=>['/health','/start','/status'].includes(p)));
-});
-test('switching editor stops microphone and does not insert late dictation',async()=>{
-  let context='a';const paths=[],texts=[];
-  const controller=new VoiceController({context:()=>context,onText:t=>texts.push(t),fetchImpl:async url=>{
-    paths.push(new URL(url).pathname);
-    if(url.endsWith('/health'))return response({state:'ready'});
-    if(url.endsWith('/start'))return response({id:'session'});
-    return response({state:'listening',events:[]});
-  }});
-  await controller.start();clearTimeout(controller.timer);context='b';await controller.poll(controller.epoch);
-  assert.equal(controller.session,null);assert.deepEqual(texts,[]);assert.equal(paths.at(-1),'/stop');
+test('helper request returns parsed JSON from the local server',async()=>{
+  const helper=new LocalHelper({fetchImpl:async()=>response({state:'ready'})});
+  const data=await helper.request('/health');
+  assert.equal(data.state,'ready');
 });
 test('image prepare does not surface a voice-session 404 when the helper is closed',async()=>{
-  const controller=new VoiceController({fetchImpl:async()=>({ok:false,status:404,json:async()=>({message:'语音会话已结束，请重新开始。'})})});
-  await assert.rejects(controller.request('/images/prepare','POST',{images:['data:image/png;base64,YQ==']}),error=>error.message==='本机助手未开启。'&&!/语音会话/.test(error.message));
+  const helper=new LocalHelper({fetchImpl:async()=>({ok:false,status:404,json:async()=>({message:'语音会话已结束，请重新开始。'})})});
+  await assert.rejects(helper.request('/images/prepare','POST',{images:['data:image/png;base64,YQ==']}),error=>error.message==='本机助手未开启。'&&!/语音会话/.test(error.message));
 });
-test('cancel without a session does not report a voice error',async()=>{
-  const states=[];
-  const controller=new VoiceController({onState:s=>states.push(s),fetchImpl:async()=>{throw new Error('fetch failed');}});
-  controller.cancel();
-  assert.deepEqual(states,[]);
-  assert.equal(controller.phase,'idle');
+test('unavailable helper shows actionable error for clipboard path',async()=>{
+  const helper=new LocalHelper({fetchImpl:async()=>{throw new Error('fetch failed');}});
+  await assert.rejects(helper.request('/clipboard'),/打开局部改图插件/);
 });
-test('unavailable helper shows actionable error and does not submit audio',async()=>{
-  const states=[];const controller=new VoiceController({onState:s=>states.push(s),fetchImpl:async()=>{throw new Error('fetch failed');}});
-  await controller.start();assert.equal(states.at(-1).state,'error');assert.match(states.at(-1).message,/打开局部改图插件/);assert.equal(controller.session,null);
+test('unavailable helper shows actionable error for drop path',async()=>{
+  const helper=new LocalHelper({fetchImpl:async()=>{throw new Error('fetch failed');}});
+  await assert.rejects(helper.request('/drop/read','POST',{paths:[]}),/打开局部改图插件/);
 });
-test('stop retains final recognized phrase before completion',async()=>{
-  const texts=[];let stopped=false;
-  const controller=new VoiceController({onText:t=>texts.push(t),fetchImpl:async(url,options)=>{
-    if(url.endsWith('/health'))return response({state:'ready'});
-    if(url.endsWith('/start'))return response({id:'session'});
-    if(url.includes('/stop')){assert.equal(options.method,'POST');stopped=true;return response({state:'stopping'});}
-    return response({state:stopped?'complete':'listening',events:stopped?[{seq:1,text:'保留桌面纹理'}]:[]});
-  }});
-  await controller.start();clearTimeout(controller.timer);await controller.stop();await controller.poll(controller.epoch);
-  assert.deepEqual(texts,['保留桌面纹理']);assert.equal(controller.phase,'complete');
+test('unavailable helper shows actionable error for annotate path',async()=>{
+  const helper=new LocalHelper({fetchImpl:async()=>{throw new Error('fetch failed');}});
+  await assert.rejects(helper.request('/annotate/open','POST',{}),/打开局部改图插件/);
+});
+test('unavailable helper shows generic error for health check',async()=>{
+  const helper=new LocalHelper({fetchImpl:async()=>{throw new Error('fetch failed');}});
+  await assert.rejects(helper.request('/health'),/打开局部改图插件/);
 });
 function fakeChild(){const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();child.stdin=new PassThrough();child.kill=()=>child.emit('exit',0);return child;}
 test('loopback helper rejects web callers and only launches recording on authenticated start',async()=>{
@@ -119,6 +95,15 @@ test('local drop window sends images into the panel polling queue',async()=>{
     const second=await(await fetch(base+'/drop/poll?id='+opened.id,{headers})).json();assert.deepEqual(second.references,[]);
     const bad=await fetch(base+'/drop/upload?id='+opened.id,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({references:[{name:'x',data:'file:///secret'}]})});assert.equal(bad.status,400);
   }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+});
+test('drop overlay stays an opaque window so Explorer can hand it files',()=>{
+  const source=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','scripts','drop-overlay.ps1'),'utf8');
+  assert.doesNotMatch(source,/Opacity\s*=/);
+  assert.doesNotMatch(source,/WS_EX_TRANSPARENT|0x00000020/);
+  assert.match(source,/AllowDrop\s*=\s*\$true/);
+  assert.match(source,/\$req\.Proxy\s*=\s*\$null/);
+  assert.match(source,/X-PS-Local-Voice/);
+  assert.match(source,/DragDrop/);
 });
 test('drop cover arms the overlay and never opens the titled drop window',async()=>{
   const windows=[];const overlays=[];
