@@ -467,6 +467,13 @@ test('native scrollbar arrows advance exactly two ordered rows without duplicate
  await new Promise(resolve=>setTimeout(resolve,90));tabs.scrollTop=96;tabs.scroll();assert.equal(tabs.scrollTop,128);
  assert.deepEqual(h.nodes['document-tabs'].children.map(node=>Number(node.children[0].textContent)),Array.from({length:20},(_,i)=>i+1));
  assert.match(fs.readFileSync('plugin/panel.css','utf8'),/height:64px; max-height:64px; overflow-x:hidden; overflow-y:auto/);
+ const css=fs.readFileSync('plugin/panel.css','utf8');
+ const html=fs.readFileSync('plugin/index.html','utf8');
+ assert.match(html,/id="panel-scroll"/);
+ assert.match(css,/width:calc\(100% \+ 20px\)/);
+ assert.match(css,/scrollbar-width:none/);
+ assert.match(css,/main::-webkit-scrollbar/);
+ assert.match(css,/\.prompt-editor textarea::-webkit-scrollbar/);
  assert.doesNotMatch(fs.readFileSync('plugin/index.html','utf8'),/id="tabs-(up|down)"/);
 });
 
