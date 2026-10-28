@@ -480,6 +480,8 @@ async function readSelection(aspectOverride, preserveCurrent = false) {
   if(!selectionBounds||!(selectionBounds.width>0)||!(selectionBounds.height>0))throw new Error('请先在 PS 用框选或套索圈出区域。');
   const configuredRatio=$('output-size').value||'original';
   const aspectRatio=aspectOverride||(configuredRatio==='original'?closestStandardAspect(selectionBounds.width,selectionBounds.height):configuredRatio);
+  const stalePixels=capture?.imageData?.imageData;
+  if(stalePixels&&typeof stalePixels.dispose==='function'){try{stalePixels.dispose();}catch(_){}}
   const nextCapture = await ps.captureSelection('copyMerged', false, false, {tight:true,padding:8,aspectRatio,selectionBounds});
   if(epoch!==selectionEpoch)return;
   nextCapture.aspectRatio=aspectRatio;
