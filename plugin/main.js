@@ -10,6 +10,7 @@ const { pngRGBA }=require('./png');
 const { VoiceController }=require('./voice');
 const { PromptEditor }=require('./prompt-editor');
 const { OptimizerClient }=require('./optimizer');
+const { prepareOptimizeImages }=require('./optimize-image');
 const { closestStandardAspect, closestStandardImageSize }=require('./modules/geometry');
 const LOCAL_EDIT_EDGE_FEATHER={enabled:true,bias:-1,relative:0.015,minRadius:1,maxRadius:3};
 let queue=null, pageName='edit', selectedJobId=null, historyOpen=false, clearHistoryArmed=false;
@@ -27,10 +28,12 @@ async function optimizePrompt(){
  if(optimizing){cancelOptimization();status('已取消优化。');return;}
  const text=$('prompt').value.trim();if(!text&&!sourceImage&&!references.length){status('请添加图片或写提示词后再优化。',true);return;}
  voice.cancel();clearOptimizeUndo();const context=selectedJobId,epoch=++optimizeEpoch,original=$('prompt').value;
- const images=[...(sourceImage?[{name:'选区.png',data:sourceImage}]:[]),...references.map((item,index)=>({name:item.name||`参考图${index+(sourceImage?2:1)}.png`,data:item.data}))];
+ const rawImages=[...(sourceImage?[{name:'选区.png',data:sourceImage}]:[]),...references.map((item,index)=>({name:item.name||`参考图${index+(sourceImage?2:1)}.png`,data:item.data}))];
  const target=['banana-2','banana-pro'].includes($('model').value)?'banana2':'generic_image';
  optimizing=true;refresh();
  try{
+  const images=await prepareOptimizeImages(rawImages);
+  if(epoch!==optimizeEpoch||context!==selectedJobId)return;
   const result=await optimizer.optimize({text,images,target});
   if(epoch!==optimizeEpoch||context!==selectedJobId)return;
   const incoming=Array.isArray(result.images)?result.images:[];
