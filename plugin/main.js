@@ -167,7 +167,7 @@ async function key() {
   try { const value = await storage.secureStorage.getItem('lk888-key'); return String.fromCharCode(...value); }
   catch (_) { throw new Error('请在设置中填写并保存 API Key。'); }
 }
-async function client() { const api=new MediaClient(await key());api.prepareImages=async images=>{try{const result=await voice.request('/images/prepare','POST',{images});if(!Array.isArray(result.images)||result.images.length!==images.length){const invalid=new Error('图片预处理返回无效，已改用原图直接提交。');invalid.prepareSkipped=true;throw invalid;}return result.images;}catch(error){if(error&&error.prepareSkipped)throw error;const skipped=new Error('本机助手未开启，已改用原图直接提交。');skipped.prepareSkipped=true;throw skipped;}};return api; }
+async function client() { const api=new MediaClient(await key());api.prepareImages=async images=>{try{const result=await voice.request('/images/prepare','POST',{images});if(!Array.isArray(result.images)||result.images.length!==images.length){const invalid=new Error('图片预处理返回无效，已改用原图直接提交。');invalid.prepareSkipped=true;throw invalid;}if(result.note)result.images.prepareNote=result.note;return result.images;}catch(error){if(error&&error.prepareSkipped)throw error;const skipped=new Error('本机助手未开启，已改用原图直接提交。');skipped.prepareSkipped=true;throw skipped;}};return api; }
 async function withBusy(fn) {
   if (busy) { status('正在处理…', true); return; }
   const epoch = ++busyEpoch;

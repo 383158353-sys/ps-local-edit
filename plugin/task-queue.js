@@ -1,4 +1,5 @@
 const {imageSources,unwrap,providerError}=require('./api');
+const {fitUploadImages}=require('./image-budget');
 class TaskQueue{
  constructor({jobs=[],persist,client,onChange}){this.jobs=jobs;this.persist=persist;this.client=client;this.onChange=onChange;this.querying=new Set();}
  save(){this.persist(this.jobs);this.onChange();}
@@ -6,14 +7,35 @@ class TaskQueue{
   const index=this.jobs.findIndex(j=>j.id===record.id);if(index>=0)this.jobs[index]=record;else this.jobs.unshift(record);
   record.phase='准备图片';record.timings={startedAt:Date.now()};this.save();
   const api=await this.client();
-  if(images.length&&api.prepareImages){try{images=await api.prepareImages(images);}catch(error){record.prepareNote=error&&error.prepareSkipped?error.message:'本机助手未开启，已改用原图直接提交。';}}
+  let note='';
+  if(images.length&&api.prepareImages){
+   try{
+    const prepared=await api.prepareImages(images);
+    if(Array.isArray(prepared)&&prepared.length===images.length){images=prepared.slice();if(prepared.prepareNote)note=prepared.prepareNote;}
+   }catch(error){
+    const message=String(error&&error.message||'');
+    if(!/无法识别的图片/.test(message))note=error&&error.prepareSkipped?message:'本机助手未开启，已改用原图直接提交。';
+   }
+  }
+  if(images.length){
+   const fitted=fitUploadImages(images,{targetBytes:api&&api.uploadByteBudget});
+   images=fitted.images;
+   if(fitted.note)note=fitted.note;
+  }
+  if(note)record.prepareNote=note;
   record.timings.preparedAt=Date.now();record.phase='上传图片，等待平台接单';
   record.pendingSubmissions=record.count;record.state='submitting';this.save();
   // Each requested output is submitted once. Independent requests need not wait
   // for the preceding model task to be accepted or completed.
   const failures=[];
   await Promise.all(Array.from({length:record.count},async(_,index)=>{
-   try{const id=await api.submit(record.model,record.instruction,images,params);record.tasks.push({id,state:'running',results:[],outputIndex:index});}
+   try{
+    const submitted=await api.submit(record.model,record.instruction,images,params);
+    if(submitted&&typeof submitted==='object'&&Array.isArray(submitted.images)&&submitted.images.length){
+     const id=submitted.taskId?String(submitted.taskId):'local-sync-'+record.id+'-'+index;
+     record.tasks.push({id,state:'ready',results:submitted.images.map(source=>({source,imported:false})),outputIndex:index,immediate:!submitted.taskId});
+    }else record.tasks.push({id:String(submitted),state:'running',results:[],outputIndex:index});
+   }
    catch(e){failures.push(e);record.error=e.message;}
    finally{record.pendingSubmissions--;record.phase='已接单 '+record.tasks.length+'/'+record.count+'，待响应 '+record.pendingSubmissions;this.save();}
   }));

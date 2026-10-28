@@ -14,6 +14,86 @@ const MODELS = [
   { id: 'custom', label: '其他模型（自定义 ID）' }
 ];
 function unwrap(value) { return value && value.data && typeof value.data === 'object' && !Array.isArray(value.data) ? value.data : value; }
+function asTaskId(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(Math.trunc(value));
+  if (typeof value !== 'string') return '';
+  const text = value.trim();
+  if (!text || text.length > 200 || /^(https?:|data:)/i.test(text)) return '';
+  if (/^(null|undefined|none|success|ok|true|false)$/i.test(text)) return '';
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(text)) return '';
+  return text;
+}
+function taskIdOn(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+  for (const key of Object.keys(value)) {
+    if (key.toLowerCase().replace(/[_-]/g, '') !== 'taskid') continue;
+    const id = asTaskId(value[key]);
+    if (id) return id;
+  }
+  const task = value.task;
+  if (task && typeof task === 'object' && !Array.isArray(task)) {
+    const id = asTaskId(task.id ?? task.task_id ?? task.taskId);
+    if (id) return id;
+  }
+  return '';
+}
+// LK888 create responses are not one shape: task_id, taskId, data.task.id,
+// or a synchronous data[].url with no task id at all.
+function submissionTaskId(payload) {
+  const seen = new Set();
+  function walk(value, depth) {
+    if (depth > 8 || value == null) return '';
+    if (typeof value === 'string') {
+      const text = value.trim();
+      if (/^[\[{]/.test(text)) { try { return walk(JSON.parse(text), depth + 1); } catch (_) { return ''; } }
+      return '';
+    }
+    if (typeof value !== 'object') return '';
+    if (seen.has(value)) return '';
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = walk(item, depth + 1);
+        if (found) return found;
+      }
+      return '';
+    }
+    const direct = taskIdOn(value);
+    if (direct) return direct;
+    const looksLikeTask = ['state', 'status', 'is_final', 'isFinal'].some(key => value[key] != null && value[key] !== '');
+    if (looksLikeTask && value.url == null && value.b64_json == null) {
+      const id = asTaskId(value.id);
+      if (id) return id;
+    }
+    for (const key of Object.keys(value)) {
+      if (['prompt', 'input', 'images', 'metadata', 'usage', 'error', 'message', 'msg'].includes(key)) continue;
+      const child = value[key];
+      if (typeof child === 'string' && /^[\[{]/.test(child.trim())) {
+        const found = walk(child, depth + 1);
+        if (found) return found;
+      }
+      if (child && typeof child === 'object') {
+        const found = walk(child, depth + 1);
+        if (found) return found;
+      } else if ((key === 'data' || key.toLowerCase().replace(/[_-]/g, '') === 'taskid') && (typeof child === 'string' || typeof child === 'number')) {
+        const id = asTaskId(child);
+        if (id && /\d/.test(String(child))) return id;
+      }
+    }
+    return '';
+  }
+  return walk(payload, 0);
+}
+function submissionFailure(payload) {
+  const code = payload?.code ?? unwrap(payload)?.code;
+  if (code == null || code === '') return null;
+  const ok = code === 0 || code === 1 || code === 200 || code === '0' || code === '1' || code === '200' || /^(success|ok|成功)$/i.test(String(code));
+  if (ok) return null;
+  const msg = [payload?.msg, payload?.message, unwrap(payload)?.msg, unwrap(payload)?.message].find(value => typeof value === 'string' && value.trim());
+  const error = new Error(msg ? msg.trim().slice(0, 300) : ('平台未创建任务（code ' + code + '）。请先到平台确认，避免重复计费。'));
+  error.terminal = true;
+  return error;
+}
 function providerError(payload, status) {
   const error=payload?.error;
   const detail=typeof error==='string'?error:[error?.message,error?.msg,error?.detail,error?.type,error?.code,payload?.message,payload?.msg,payload?.detail,payload?.code].find(value=>typeof value==='string'&&value.trim());
@@ -108,9 +188,15 @@ class MediaClient {
       else {const error=new Error('当前平台未返回可唯一确认的 Banana 2.1 模型 ID；尚未提交生图任务。请在设置中刷新平台模型。');error.terminal=true;throw error;}
     }
     const payload = await this.request('/v1/media/generate', { model, prompt, params: { ...params, images } });
-    const taskId = unwrap(payload).task_id || payload.task_id;
-    if (!taskId) throw new Error('未收到任务编号。请先到平台确认任务，避免重复计费。');
-    return String(taskId);
+    const taskId = submissionTaskId(payload);
+    const echoed = new Set((Array.isArray(images) ? images : []).filter(item => typeof item === 'string'));
+    const readyImages = imageSources(payload).filter(source => !echoed.has(source));
+    if (taskId && readyImages.length) return { taskId: String(taskId), images: readyImages };
+    if (taskId) return String(taskId);
+    if (readyImages.length) return { images: readyImages };
+    const failure = submissionFailure(payload);
+    if (failure) throw failure;
+    throw new Error('未收到任务编号。请先到平台确认任务，避免重复计费。');
   }
   async status(taskId) { return this.request('/v1/media/status?task_id=' + encodeURIComponent(taskId)); }
   async balance() { return this.request('/api/v1/skills/balance'); }
@@ -121,4 +207,4 @@ class MediaClient {
     return items.map(item => typeof item === 'string' ? {id:item,label:item} : {id:item.id || item.name,label:item.name || item.id}).filter(item => typeof item.id === 'string' && item.id.trim());
   }
 }
-module.exports = { MODELS, MediaClient, imageSources, unwrap, providerError };
+module.exports = { MODELS, MediaClient, imageSources, unwrap, providerError, submissionTaskId };
