@@ -164,6 +164,21 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
     if (!trustedOrigin || request.headers['x-ps-local-voice'] !== '1') return reply(403,{message:'仅允许本机插件调用。'});
     const url = new URL(request.url,'http://127.0.0.1');
     if (url.pathname === '/health' && request.method === 'GET') return reply(200,readiness);
+    if (url.pathname === '/images/prepare' && request.method === 'POST') {
+      readJsonBody(request, 72 * 1024 * 1024, parsed => {
+        if (!parsed || !Array.isArray(parsed.images)) return reply(400, {message:'图片预处理请求无效。'});
+        if (parsed.images.length > 16) return reply(400, {message:'图片数量过多。'});
+        const images = [];
+        for (const item of parsed.images) {
+          if (typeof item !== 'string') return reply(400, {message:'图片预处理遇到无法识别的图片。'});
+          const text = item.replace(/\s+/g, '');
+          if (text.length > 14 * 1024 * 1024 || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(text)) return reply(400, {message:'图片预处理遇到无法识别的图片。'});
+          images.push(text);
+        }
+        return reply(200, {images, prepared: true});
+      });
+      return;
+    }
     if (url.pathname === '/clipboard' && request.method === 'GET') {
       clipboardReader().then(data=>reply(200,data)).catch(error=>reply(500,{message:error.message}));
       return;

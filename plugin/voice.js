@@ -14,17 +14,27 @@ class VoiceController {
       try{data=await response.json();}catch(_){data={};}
       if(!response.ok){
         const raw=String(data.message||'');
-        // The helper's unmatched-route 404 is the voice-session sentence. Never let that text leave this class.
-        if(preparing||/语音会话|未知语音请求|本机服务没有这个接口/.test(raw)){
+        // A reached server is up, even when this build has no /images/prepare.
+        // Only a failed connection means the assistant process is off.
+        if(preparing){
+          const missing=response.status===404||/语音会话|未知语音请求|本机服务没有这个接口/.test(raw);
+          const skipped=new Error(missing?'本机助手已开启，图片预处理不可用，已改用原图直接提交。':((raw&&!/语音会话/.test(raw)?raw:'图片预处理失败')+'，已改用原图直接提交。'));
+          skipped.prepareSkipped=true;skipped.assistantUp=true;throw skipped;
+        }
+        if(/语音会话|未知语音请求|本机服务没有这个接口/.test(raw)){
           const error=new Error('本机助手未开启。');
-          error.sessionGone=!preparing;
+          error.sessionGone=true;
           throw error;
         }
         throw new Error(raw||'本机服务异常。');
       }
       return data;
     } catch(error) {
-      if(preparing)throw new Error('本机助手未开启。');
+      if(preparing){
+        if(error&&error.prepareSkipped)throw error;
+        const skipped=new Error(error&&error.name==='AbortError'?'本机助手响应超时，已改用原图直接提交。':'本机助手未开启，已改用原图直接提交。');
+        skipped.prepareSkipped=true;skipped.assistantUp=false;throw skipped;
+      }
       if(error.sessionGone)throw error;
       if(error.name==='AbortError'||/fetch|network|connect/i.test(error.message||''))throw new Error((path.startsWith('/clipboard')?'本机截图粘贴服务':path.startsWith('/drop')?'本机图片拖入服务':path.startsWith('/annotate')?'本机图片标注服务':'本机语音服务')+'未连接。请双击“打开局部改图插件.cmd”后重试。');
       throw error;

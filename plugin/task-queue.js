@@ -13,7 +13,13 @@ class TaskQueue{
   // for the preceding model task to be accepted or completed.
   const failures=[];
   await Promise.all(Array.from({length:record.count},async(_,index)=>{
-   try{const id=await api.submit(record.model,record.instruction,images,params);record.tasks.push({id,state:'running',results:[],outputIndex:index});}
+   try{
+    const submitted=await api.submit(record.model,record.instruction,images,params);
+    if(submitted&&typeof submitted==='object'&&Array.isArray(submitted.images)&&submitted.images.length){
+     const id=submitted.taskId?String(submitted.taskId):'local-sync-'+record.id+'-'+index;
+     record.tasks.push({id,state:'ready',results:submitted.images.map(source=>({source,imported:false})),outputIndex:index,immediate:!submitted.taskId});
+    }else record.tasks.push({id:String(submitted),state:'running',results:[],outputIndex:index});
+   }
    catch(e){failures.push(e);record.error=e.message;}
    finally{record.pendingSubmissions--;record.phase='已接单 '+record.tasks.length+'/'+record.count+'，待响应 '+record.pendingSubmissions;this.save();}
   }));
