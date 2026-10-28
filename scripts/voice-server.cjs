@@ -165,17 +165,18 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
     const url = new URL(request.url,'http://127.0.0.1');
     if (url.pathname === '/health' && request.method === 'GET') return reply(200,readiness);
     if (url.pathname === '/images/prepare' && request.method === 'POST') {
-      readJsonBody(request, 72 * 1024 * 1024, parsed => {
+      readJsonBody(request, 128 * 1024 * 1024, parsed => {
         if (!parsed || !Array.isArray(parsed.images)) return reply(400, {message:'图片预处理请求无效。'});
         if (parsed.images.length > 16) return reply(400, {message:'图片数量过多。'});
-        const images = [];
         for (const item of parsed.images) {
-          if (typeof item !== 'string') return reply(400, {message:'图片预处理遇到无法识别的图片。'});
-          const text = item.replace(/\s+/g, '');
-          if (text.length > 14 * 1024 * 1024 || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(text)) return reply(400, {message:'图片预处理遇到无法识别的图片。'});
-          images.push(text);
+          if (typeof item !== 'string' || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=\s]+$/i.test(item)) return reply(400, {message:'图片预处理遇到无法识别的图片。'});
         }
-        return reply(200, {images, prepared: true});
+        try {
+          const fitted = require('../plugin/image-budget').fitUploadImages(parsed.images.map(item => item.replace(/\s+/g, '')));
+          return reply(200, {images: fitted.images, prepared: true, compressed: fitted.compressed, note: fitted.note});
+        } catch (error) {
+          return reply(400, {message: error && error.message || '图片预处理失败。'});
+        }
       });
       return;
     }
