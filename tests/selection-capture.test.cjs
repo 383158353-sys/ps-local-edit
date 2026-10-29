@@ -4,15 +4,16 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-function loadPs({ selectionBounds } = {}) {
+function loadPs({ selectionBounds, maskBytes, documentWidth, documentHeight } = {}) {
   const calls = [];
+  const order = [];
   let inModal = false;
   const doc = {
     id: 7,
     name: 'pack.psd',
     path: 'C:/art/pack.psd',
-    width: 1000,
-    height: 800,
+    width: documentWidth || 1000,
+    height: documentHeight || 800,
     resolution: 72,
     bitsPerChannel: 8,
     colorProfileName: 'sRGB IEC61966-2.1',
@@ -28,12 +29,14 @@ function loadPs({ selectionBounds } = {}) {
     }
   };
   const pixels = new Uint8Array(bounds.width * bounds.height * 4);
-  const mask = new Uint8Array(bounds.width * bounds.height);
+  const mask = maskBytes || new Uint8Array(bounds.width * bounds.height);
   const imaging = {
     async getSelection() {
-      return { sourceBounds: { ...bounds }, imageData: { width: bounds.width, height: bounds.height, getData: async () => mask } };
+      order.push('getSelection');
+      return { sourceBounds: { ...bounds }, imageData: { width: bounds.width, height: bounds.height, getData: async () => mask, dispose() { order.push('dispose'); } } };
     },
     async getPixels() {
+      order.push('getPixels');
       return { sourceBounds: { ...bounds }, imageData: { width: bounds.width, height: bounds.height, components: 4, getData: async () => pixels } };
     }
   };
@@ -56,7 +59,7 @@ function loadPs({ selectionBounds } = {}) {
       throw new Error('Unexpected import: ' + name);
     }
   }, { filename: 'ps.js' });
-  return { api: module.exports, calls, capture: () => module.exports.captureSelection('copyMerged', false, false, { tight: true, padding: 0, ...(selectionBounds ? { selectionBounds } : {}) }) };
+  return { api: module.exports, calls, order, capture: () => module.exports.captureSelection('copyMerged', false, false, { tight: true, padding: 0, ...(selectionBounds ? { selectionBounds } : {}) }) };
 }
 
 test('prefetched selection bounds are not read again with async batchPlay inside the modal', async () => {
@@ -75,4 +78,56 @@ test('selection geometry batchPlay stays outside executeAsModal', async () => {
   assert.ok(calls.every(call => call.inModal === false));
   assert.equal(result.context.originalBounds.left, 10);
   assert.equal(result.context.originalBounds.top, 20);
+});
+
+test('mask image data is released before getPixels', async () => {
+  const { order, capture } = loadPs({ selectionBounds: { left: 10, top: 20, width: 20, height: 30 } });
+  await capture();
+  assert.deepEqual(order, ['getSelection', 'dispose', 'getPixels']);
+});
+
+test('a large all-white mask still counts as select all and a dark pixel does not', async () => {
+  const mask = new Uint8Array(400000);
+  mask.fill(255);
+  const white = loadPs({ selectionBounds: { left: 10, top: 20, width: 20, height: 30 }, maskBytes: mask });
+  const selected = await white.capture();
+  assert.equal(selected.isSelectAll, true);
+  mask[0] = 0;
+  const punched = loadPs({ selectionBounds: { left: 10, top: 20, width: 20, height: 30 }, maskBytes: mask });
+  const partial = await punched.capture();
+  assert.equal(partial.isSelectAll, false);
+});
+
+test('select-all check samples a large mask instead of visiting every pixel', () => {
+  const { api } = loadPs();
+  const length = 800000;
+  const reads = new Set();
+  const buffer = new Proxy({ length }, {
+    get(target, prop) {
+      if (prop === 'length') return length;
+      const index = Number(prop);
+      if (Number.isInteger(index) && index >= 0 && index < length) {
+        reads.add(index);
+        return 255;
+      }
+      return target[prop];
+    }
+  });
+  assert.equal(api.maskLooksSelectAll(buffer), true);
+  assert.ok(reads.size > 0);
+  assert.ok(reads.size <= 262146);
+  assert.ok(reads.size < length);
+});
+
+test('document size unit values still produce a finite capture', async () => {
+  const { capture } = loadPs({
+    selectionBounds: { left: 10, top: 20, width: 20, height: 30 },
+    documentWidth: { _value: 1000 },
+    documentHeight: { _value: 800 }
+  });
+  const result = await capture();
+  assert.equal(result.bounds.width, 20);
+  assert.equal(result.bounds.height, 30);
+  assert.equal(Number.isFinite(result.bounds.left), true);
+  assert.equal(Number.isFinite(result.bounds.top), true);
 });

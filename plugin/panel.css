@@ -114,3 +114,6 @@ html,body{height:100%;}
 .mm-arrow{flex:0 0 20px;width:20px;height:20px;padding:0;font-size:11px;color:#ddd;background:#383838;border:1px solid #666;border-radius:3px;}
 .mm-add{margin:6px 0;font-size:11px;color:#aaa;} .mm-add summary{cursor:pointer;}
 .mm-misc{margin-top:10px;border-top:1px solid #444;padding-top:6px;}
+#capture-selection{display:block;width:100%;min-height:32px;margin:0;padding:6px 14px;color:#fff;background:#1473e6;border:0;border-radius:16px;font:13px/20px "Microsoft YaHei","Segoe UI",sans-serif;cursor:pointer;}
+#capture-selection:hover{background:#0d66d0;}
+#capture-selection:disabled{opacity:.55;cursor:default;}
