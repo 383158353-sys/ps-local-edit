@@ -35,6 +35,7 @@ public class OverlayNative {
   [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vKey);
   [DllImport("user32.dll")] public static extern bool ChangeWindowMessageFilterEx(IntPtr hWnd, uint message, uint action, IntPtr pChangeFilterStruct);
   [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, System.UIntPtr dwExtraInfo);
+  [DllImport("user32.dll")] public static extern uint GetDpiForSystem();
   public static void AllowDropMessages(IntPtr hwnd) {
     ChangeWindowMessageFilterEx(hwnd, 0x0049, 1, IntPtr.Zero); // WM_COPYGLOBALDATA
     ChangeWindowMessageFilterEx(hwnd, 0x004A, 1, IntPtr.Zero); // WM_COPYDATA
@@ -42,6 +43,7 @@ public class OverlayNative {
   }
   public static void PulseDrag() {
     mouse_event(0x0001, 1, 0, 0, System.UIntPtr.Zero);
+    mouse_event(0x0001, 0xFFFFFFFFu, 0, 0, System.UIntPtr.Zero);
   }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
@@ -96,15 +98,54 @@ function Test-Inside($pt) {
   if (-not $form.Visible) { return $false }
   return $pt.X -ge ($form.Left + 8) -and $pt.Y -ge ($form.Top + 8) -and $pt.X -lt ($form.Right - 8) -and $pt.Y -lt ($form.Bottom - 8)
 }
+$script:dpiScale = 0
+function Get-DpiScale {
+  if ($script:dpiScale -ge 1) { return $script:dpiScale }
+  $script:dpiScale = 1.0
+  try {
+    $dpi = [OverlayNative]::GetDpiForSystem()
+    if ($dpi -ge 96 -and $dpi -le 480) { $script:dpiScale = [double]$dpi / 96.0 }
+  } catch {}
+  return $script:dpiScale
+}
+function Test-PointInRect($pt, $left, $top, $width, $height, $slack) {
+  if ($width -lt 40 -or $height -lt 40 -or $width -gt 640 -or $height -gt 480) { return $false }
+  if ($left -lt -8000 -or $left -gt 16000 -or $top -lt -8000 -or $top -gt 16000) { return $false }
+  return ($pt.X -ge ($left - $slack)) -and ($pt.X -lt ($left + $width + $slack)) -and ($pt.Y -ge ($top - $slack)) -and ($pt.Y -lt ($top + $height + $slack))
+}
+function Clamp-AroundCursor($left, $top, $width, $height, $pt) {
+  $maxW = 480; $maxH = 360; $minW = 180; $minH = 160
+  if ($width -lt $minW) { $left -= [int](($minW - $width) / 2); $width = $minW }
+  if ($height -lt $minH) { $top -= [int](($minH - $height) / 2); $height = $minH }
+  if ($width -gt $maxW) { $left = [int]$pt.X - [int]($maxW / 2); $width = $maxW }
+  if ($height -gt $maxH) { $top = [int]$pt.Y - [int]($maxH / 2); $height = $maxH }
+  return New-Object System.Drawing.Rectangle([int]$left, [int]$top, [int]$width, [int]$height)
+}
 function Get-CoverRect($pt) {
-  $left = 0; $top = 0; $width = 0; $height = 0
-  try { $left = [int]$sync.left; $top = [int]$sync.top; $width = [int]$sync.width; $height = [int]$sync.height } catch {}
-  # Only the panel dropzone. A desktop-sized rect is what painted Photoshop blue.
-  if ($width -ge 40 -and $width -le 280 -and $height -ge 40 -and $height -le 280 -and $left -ge -8000 -and $left -le 16000 -and $top -ge -8000 -and $top -le 16000) {
-    return New-Object System.Drawing.Rectangle($left, $top, $width, $height)
+  # UXP CSS screen pixels and this form's pixels often differ by the DPI scale.
+  # A 104x96 rect from the panel is then beside the cursor, Explorer never
+  # enters it, and the poll ends with no upload. Use the rect only when it
+  # actually contains Cursor.Position; otherwise keep a small pad under the cursor.
+  $baseLeft = 0.0; $baseTop = 0.0; $baseW = 0.0; $baseH = 0.0; $has = $false
+  try {
+    $baseLeft = [double]$sync.left; $baseTop = [double]$sync.top; $baseW = [double]$sync.width; $baseH = [double]$sync.height
+    if ($baseW -ge 40 -and $baseH -ge 40 -and $baseW -le 280 -and $baseH -le 280) { $has = $true }
+  } catch {}
+  if ($has) {
+    $scale = Get-DpiScale
+    $factors = @(1.0)
+    if ($scale -gt 1.05) { $factors = @(1.0, $scale, (1.0 / $scale)) }
+    foreach ($factor in $factors) {
+      $left = $baseLeft * $factor; $top = $baseTop * $factor; $width = $baseW * $factor; $height = $baseH * $factor
+      # Pad is 64px, so the cursor must already sit inside that pad. A rect that
+      # only "almost" contains the cursor is the misplaced 104x96 window.
+      if (Test-PointInRect $pt $left $top $width $height 48) {
+        $rect = Clamp-AroundCursor ($left - 64) ($top - 64) ($width + 128) ($height + 128) $pt
+        if (Test-PointInRect $pt $rect.X $rect.Y $rect.Width $rect.Height 0) { return $rect }
+      }
+    }
   }
-  $w = 104; $h = 96
-  return New-Object System.Drawing.Rectangle(($pt.X - 52), ($pt.Y - 48), $w, $h)
+  return New-Object System.Drawing.Rectangle(($pt.X - 116), ($pt.Y - 112), 232, 224)
 }
 function Keep-Topmost {
   if ($form.Visible) { [OverlayNative]::SetWindowPos($form.Handle, [IntPtr](-1), 0, 0, 0, 0, [uint32]0x0013) | Out-Null }
@@ -121,11 +162,12 @@ function Enable-DropTarget {
 }
 function Pulse-Drag {
   if ($script:pulsed -or -not (Test-MouseDown)) { return }
+  $pt = Get-CursorPoint
+  # +1 then -1 has to stay on the catch. A pulse from the edge walks the
+  # hotspot onto the UXP panel and the drop is empty again.
+  $inside = $form.Visible -and $pt.X -ge ($form.Left + 12) -and $pt.X -lt ($form.Right - 12) -and $pt.Y -ge ($form.Top + 12) -and $pt.Y -lt ($form.Bottom - 12)
+  if (-not $inside) { return }
   $script:pulsed = $true
-  # DoDragDrop hit-tests on mouse movement. A window shown under a still
-  # cursor never receives DragEnter. One pixel stays on the dropzone-sized target.
-  # Do not use SetCursorPos: the shell drag loop ignores it and the hotspot
-  # drifts off the window.
   try { [OverlayNative]::PulseDrag() } catch {}
 }
 function Update-Cover([string]$id) {
