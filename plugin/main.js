@@ -433,6 +433,7 @@ async function candidateAction(data){const record=queue.jobs.find(j=>j.id===data
  await ps.placeBack('editableSo',fs.createSessionToken(file),region.bounds,region.maskData,{...LOCAL_EDIT_EDGE_FEATHER,skipImageBlur:true});result.imported=true;queue.save();status('已添加此图片为独立图层；蒙版边缘轻微向选区内羽化，不会扩出原选区。');
 }
 function boundsNumber(value){const raw=value&&typeof value==='object'&&'_value' in value?value._value:value;const number=Number(raw);return Number.isFinite(number)?number:null;}
+function releasePixels(image){if(image&&typeof image.dispose==='function'){try{image.dispose();}catch(_){}}}
 function refitMask(mask,fromBounds,toBounds){
  const srcW=mask.width|0,srcH=mask.height|0,dstW=toBounds.width|0,dstH=toBounds.height|0,src=mask.imageData;
  if(!(srcW>0)||!(srcH>0)||!(dstW>0)||!(dstH>0)||!src||src.length<srcW*srcH)return mask;
@@ -464,6 +465,9 @@ function useCapturedPixels(nextCapture){
 async function readSelection(aspectOverride, preserveCurrent = false) {
   const epoch=++selectionEpoch;
   status('正在读取选区…');
+  if($('selection-size'))$('selection-size').textContent='正在读取选区…';
+  // Yield once so the status line paints before Photoshop enters a modal
+  // and stops updating this panel.
   await new Promise(resolve=>setTimeout(resolve,0));
   if(epoch!==selectionEpoch)return;
   try{voice.cancel();}catch(_){}
@@ -480,15 +484,23 @@ async function readSelection(aspectOverride, preserveCurrent = false) {
   if(!selectionBounds||!(selectionBounds.width>0)||!(selectionBounds.height>0))throw new Error('请先在 PS 用框选或套索圈出区域。');
   const configuredRatio=$('output-size').value||'original';
   const aspectRatio=aspectOverride||(configuredRatio==='original'?closestStandardAspect(selectionBounds.width,selectionBounds.height):configuredRatio);
+  // The previous frame still owns an imaging slot until it is disposed.
+  // getSelection/getPixels will wait forever if that slot is still taken.
+  releasePixels(capture?.imageData?.imageData);
   const nextCapture = await ps.captureSelection('copyMerged', false, false, {tight:true,padding:8,aspectRatio,selectionBounds});
-  if(epoch!==selectionEpoch)return;
+  if(epoch!==selectionEpoch){releasePixels(nextCapture?.imageData?.imageData);return;}
   nextCapture.aspectRatio=aspectRatio;
   nextCapture.aspectRatioMatched=nextCapture.aspectRatioMatched!==false;
   nextCapture.documentWidth = documentWidth; nextCapture.documentHeight = documentHeight;
-  const imageData = useCapturedPixels(nextCapture);
-  const pixels=await imageData.getData({chunky:true});
+  let imageData;
+  try{imageData=useCapturedPixels(nextCapture);}
+  catch(error){releasePixels(nextCapture?.imageData?.imageData);throw error;}
+  const pixelWidth=imageData.width, pixelHeight=imageData.height, pixelComponents=imageData.components;
+  let pixels;
+  try{pixels=await imageData.getData({chunky:true});}
+  finally{releasePixels(imageData);}
   if(epoch!==selectionEpoch)return;
-  const encoded=pngRGBA(imageData.width,imageData.height,pixels,imageData.components);
+  const encoded=pngRGBA(pixelWidth,pixelHeight,pixels,pixelComponents);
   const image='data:image/png;base64,'+fileUtils.arrayBufferToBase64(encoded);
   // A completed task keeps its original capture for later result placement.
   // Continue in a fresh draft on the same editor, carrying all user inputs forward.
@@ -516,7 +528,7 @@ async function readSelection(aspectOverride, preserveCurrent = false) {
   show('selection-gate', false);
   show('preview-box',true);
   $('preview').src = image;
-  $('selection-size').textContent = imageData.width + ' × ' + imageData.height + ' · ' + aspectRatio;
+  $('selection-size').textContent = pixelWidth + ' × ' + pixelHeight + ' · ' + aspectRatio;
   syncInputs();
   status(capture.aspectRatioMatched?'已读取选区。参考图按最近模型比例补入上下文，回填仍由原套索蒙版限制。':'画布空间不足以使用所选模型比例，将按原选区范围生成。');
   try{await saveCurrent();}catch(error){status('已读取选区，但保存草稿失败：'+(error.message||error),true);}
@@ -543,9 +555,21 @@ function bindPress(id,handler){
   node.addEventListener('pointerup',event=>{if(event&&event.button!=null&&event.button!==0)return;pointerStamp=Date.now();return run();});
   node.addEventListener('click',()=>{if(Date.now()-pointerStamp<400)return;return run();});
 }
+// Plain click, same as 设置 and 历史记录. The old control was an sp-button
+// on bindPress: a non-primary pointerup is ignored, and click does not
+// always follow, so the read never started and the status line stayed idle.
+function bindClick(id,handler){
+  const node=$(id);
+  if(!node||node.__lkClick)return;
+  node.__lkClick=true;
+  node.addEventListener('click',event=>{
+    if(event&&event.button!=null&&event.button!==0)return;
+    return Promise.resolve().then(handler).catch(error=>status((error&&error.message)||'操作失败，请检查设置后重试。',true));
+  });
+}
 function bindCriticalActions(){
-  bindPress('capture-selection',()=>requestSelectionRead());
-  bindPress('refresh-selection',()=>requestSelectionRead());
+  bindClick('capture-selection',()=>requestSelectionRead());
+  bindClick('refresh-selection',()=>requestSelectionRead());
   bindPress('reload-panel',()=>reloadPanel());
   bindPress('generate',()=>withBusy(generate));
 }

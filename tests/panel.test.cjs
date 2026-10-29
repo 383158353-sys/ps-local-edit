@@ -5,7 +5,7 @@ const { test } = require('node:test');
 const api = require('../plugin/api');
 const {TaskQueue}=require('../plugin/task-queue');const {pngRGBA}=require('../plugin/png');
 
-function harness({ switchDocument = false, reopenSameDocument = false, reopenPathless = false, submissionFails = false, submissionMessage = '', helperDown = false, optimizerDeferred = false, noSelection = false, captureHangs = false, captureMismatch = false, captureError = '', boundsThrows = false, busyTimeoutMs = 0, entryForUrl = null, dropQueue = null } = {}) {
+function harness({ switchDocument = false, reopenSameDocument = false, reopenPathless = false, submissionFails = false, submissionMessage = '', helperDown = false, optimizerDeferred = false, noSelection = false, captureHangs = false, captureMismatch = false, captureError = '', boundsThrows = false, boundsError = '', busyTimeoutMs = 0, entryForUrl = null, dropQueue = null } = {}) {
   const nodes = {}, local = new Map(), calls = [], writes = [], requests = [], reads = [], docEvents = {}, helperCalls=[],optimizerCalls=[],captureArgs=[];let reloads=0, imageDecodes=0,optimizerCancels=0,resolveOptimize;
   function makeNode(id='') { const node={id,value:id==='prompt'?'改成红色':id==='model'?'banana-2':'',textContent:'',hidden:false,style:{},children:[],attributes:{},className:'',classList:{add(){},remove(){}},addEventListener(event,fn){this[event]=fn;},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},append(...items){for(const item of items)this.appendChild(item);},appendChild(item){item.parentNode=this;this.children.push(item);},replaceChildren(...items){this.children=[];this.append(...items);},get parentElement(){return makeNode('parent');}};Object.defineProperty(node,'innerHTML',{get(){return '';},set(value){if(value==='')this.children=[];}});return node; }
   const document = { readyState: 'interactive', addEventListener(event,fn) {docEvents[event]=fn;}, createElement: tag=>makeNode(tag), getElementById(id) { return nodes[id] ||= makeNode(id); },querySelectorAll(){return [];} };
@@ -16,7 +16,7 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
   const bounds = { left: 120, top: 90, right: 420, bottom: 290, width: 300, height: 200 };
   const mask = { width: 300, height: 200, components: 1, imageData: new Uint8Array(60000) };
   const capture = { bounds, maskData: mask, documentWidth:1000,documentHeight:800,context: { documentId: 12, documentName: 'sample.psd', documentPath:reopenPathless?'':'C:/project/sample.psd', originalBounds: { left: 150, top: 120, right: 350, bottom: 240 } }, imageData: { sourceBounds: bounds, imageData: { width: 300, height: 200, components:4,getData:async()=>new Uint8Array(300*200*4), dispose() {} } } };
-  const ps = { getSelectionBounds:async()=>({left:150,top:120,right:350,bottom:240,width:200,height:120}),hasActiveSelection:async()=>!noSelection,captureSelection: async (...args) => { captureArgs.push(args); if (captureError) throw new Error(captureError); if (captureHangs) return new Promise(() => {}); if (captureMismatch) return {...capture, imageData:{ sourceBounds:{ left:11.5, top:7.25, right:311.5, bottom:207.25 }, imageData:capture.imageData.imageData }}; return capture; }, placeBack: async (...args) => calls.push(args),placeGeneratedAsLayer:async (...args)=>calls.push(args) };
+  const ps = { getSelectionBounds:async()=>{ if(boundsError) throw new Error(boundsError); return {left:150,top:120,right:350,bottom:240,width:200,height:120}; },hasActiveSelection:async()=>!noSelection,captureSelection: async (...args) => { captureArgs.push(args); if (captureError) throw new Error(captureError); if (captureHangs) return new Promise(() => {}); if (captureMismatch) return {...capture, imageData:{ sourceBounds:{ left:11.5, top:7.25, right:311.5, bottom:207.25 }, imageData:capture.imageData.imageData }}; return capture; }, placeBack: async (...args) => calls.push(args),placeGeneratedAsLayer:async (...args)=>calls.push(args) };
   const dataFiles=new Map();const folder={createFile:async name=>({write:async value=>dataFiles.set(name,value)}),getEntry:async name=>{reads.push(name);return {read:async()=>dataFiles.get(name)};}};
   const storage = { formats: { binary: 'binary' }, secureStorage: { getItem: async () => new Uint8Array(Buffer.from('test-key')) }, localFileSystem: { getDataFolder:async()=>folder,getTemporaryFolder: async () => ({ createFile: async () => ({ write: async value => writes.push(value) }) }), createSessionToken: () => 'session-token', ...(entryForUrl?{getEntryWithUrl:entryForUrl}:{}) } };
   const fetch = async (url, options) => {
@@ -58,6 +58,24 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
 
 
 test('selection uses lossless PNG and does not submit a task',async()=>{const h=harness();await h.ready();await h.nodes['capture-selection'].click();assert.match(h.nodes.preview.src,/^data:image\/png/);assert.equal(h.requests.length,0);});
+test('selection read is a native click and does not depend on sp-button pointerup',async()=>{
+ const html=fs.readFileSync('plugin/index.html','utf8');
+ assert.match(html,/<button id="capture-selection" type="button">局部改图 · 读取选区<\/button>/);
+ assert.doesNotMatch(html,/<sp-button id="capture-selection"/);
+ const h=harness();await h.ready();
+ assert.equal(h.nodes['capture-selection'].pointerup,undefined);
+ await h.nodes['capture-selection'].click();
+ assert.match(h.nodes.status.textContent,/已读取选区/);
+ assert.doesNotMatch(h.nodes['selection-size'].textContent,/尚未读取/);
+});
+test('no active selection is reported instead of leaving the idle status',async()=>{
+ const h=harness({boundsError:'No active selection'});await h.ready();
+ await h.nodes['capture-selection'].click();
+ assert.match(h.nodes.status.textContent,/请先在 PS/);
+ assert.match(h.nodes['selection-size'].textContent,/尚未读取选区/);
+ assert.equal(h.nodes.generate.disabled,false);
+ assert.equal(h.nodes.generate.textContent,'生成');
+});
 test('optimizer button is left of voice in the panel',()=>{const html=fs.readFileSync('plugin/index.html','utf8');assert.ok(html.indexOf('id="optimize-prompt"')<html.indexOf('id="voice-prompt"'));});
 test('optimizer maps selection and references in order, fills prompt and supports undo',async()=>{
  const h=harness();await h.ready();await h.nodes['capture-selection'].click();
