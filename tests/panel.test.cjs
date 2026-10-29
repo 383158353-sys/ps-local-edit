@@ -146,17 +146,19 @@ test('a panel drop outside the image row still uses the overlay instead of a dia
  assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
  assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'拖入.png');
 });
-test('a cover that receives no Explorer drop opens the drop window instead of the miss status',async()=>{
- const h=harness({dropQueue:[[],[{name:'资源管理器.png',data:'data:image/png;base64,YWJj'}]],dropGraceMs:80});await h.ready();
- const enter=h.nodes['images-row'].dragenter({preventDefault(){},dataTransfer:{types:['Files'],files:[],items:[]}});
- await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
+test('cover posts the dropzone rectangle and a miss does not open a window',async()=>{
+ const h=harness({dropQueue:[[]],dropGraceMs:80});await h.ready();
+ h.nodes.dropzone.getBoundingClientRect=()=>({left:12,top:40,width:104,height:96});
+ const enter=h.nodes.dropzone.dragenter({preventDefault(){},screenX:400,screenY:300,clientX:20,clientY:50,dataTransfer:{types:['Files'],files:[],items:[]}});
+ await h.nodes.dropzone.drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
  await enter;
  await new Promise(resolve=>setTimeout(resolve,900));
- assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/open')&&call.options.method==='POST'));
- assert.equal(h.nodes['reference-thumbs'].children.length,1);
- assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'资源管理器.png');
- assert.doesNotMatch(h.nodes.status.textContent,/这次没有读到拖入的图片/);
- assert.match(h.nodes.status.textContent,/已添加 1 张参考图/);
+ const cover=h.helperCalls.find(call=>call.url.includes('/drop/cover')&&call.options.method==='POST');
+ assert.deepEqual(JSON.parse(cover.options.body),{x:400,y:300,left:392,top:290,width:104,height:96});
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
+ assert.equal(h.nodes['reference-thumbs'].children.length,0);
+ assert.match(h.nodes.status.textContent,/这次没有读到拖入的图片|拖入接图层还在启动/);
+ assert.doesNotMatch(h.nodes.status.textContent,/局部改图 · 拖入|弹出的窗口/);
 });
 test('an empty drop with no drag does not open a dialog',async()=>{
  const h=harness();await h.ready();

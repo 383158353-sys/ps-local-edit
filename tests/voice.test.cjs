@@ -152,9 +152,9 @@ test('drop cover wakes a waiting overlay with the cursor hint and no dialog',asy
   try{
     const pending=fetch(base+'/drop/overlay?wait=1&since=0',{headers});
     await new Promise(resolve=>setTimeout(resolve,40));
-    const covered=await(await fetch(base+'/drop/cover',{method:'POST',headers,body:JSON.stringify({x:11,y:22})})).json();
+    const covered=await(await fetch(base+'/drop/cover',{method:'POST',headers,body:JSON.stringify({x:11,y:22,left:30,top:40,width:104,height:96})})).json();
     const shown=await Promise.race([pending.then(response=>response.json()),new Promise((_,reject)=>setTimeout(()=>reject(new Error('overlay wait timed out')),1000))]);
-    assert.equal(shown.action,'show');assert.equal(shown.id,covered.id);assert.equal(shown.x,11);assert.equal(shown.y,22);assert.equal(shown.ready,false);
+    assert.equal(shown.action,'show');assert.equal(shown.id,covered.id);assert.equal(shown.x,11);assert.equal(shown.y,22);assert.equal(shown.left,30);assert.equal(shown.top,40);assert.equal(shown.width,104);assert.equal(shown.height,96);assert.equal(shown.ready,false);
     assert.equal(windows.length,0);
     assert.equal((await(await fetch(base+'/drop/ready',{method:'POST',headers})).json()).state,'ready');
     assert.equal((await(await fetch(base+'/drop/overlay',{headers})).json()).ready,true);
