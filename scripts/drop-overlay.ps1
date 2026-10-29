@@ -2,6 +2,8 @@
 # While a drag is active the panel calls /drop/cover; a background poll wakes
 # immediately and this window covers the cursor so the same drop can read files.
 # It has no title bar and no taskbar button. Do not use a click-through style.
+# Do not set Form.Opacity. A value below 1 makes a layered window, and Windows
+# will not deliver an Explorer file drop to a layered window.
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -29,6 +31,12 @@ public class OverlayNative {
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
   [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vKey);
+  [DllImport("user32.dll")] public static extern bool ChangeWindowMessageFilterEx(IntPtr hWnd, uint message, uint action, IntPtr pChangeFilterStruct);
+  public static void AllowDropMessages(IntPtr hwnd) {
+    ChangeWindowMessageFilterEx(hwnd, 0x0049, 1, IntPtr.Zero); // WM_COPYGLOBALDATA
+    ChangeWindowMessageFilterEx(hwnd, 0x004A, 1, IntPtr.Zero); // WM_COPYDATA
+    ChangeWindowMessageFilterEx(hwnd, 0x0233, 1, IntPtr.Zero); // WM_DROPFILES
+  }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 }
@@ -40,7 +48,6 @@ $form.FormBorderStyle = 'None'
 $form.ShowInTaskbar = $false
 $form.TopMost = $true
 $form.AllowDrop = $true
-$form.Opacity = 0.35
 $form.StartPosition = 'Manual'
 $form.Text = ''
 $form.BackColor = [System.Drawing.Color]::FromArgb(18, 72, 140)
@@ -110,14 +117,23 @@ function Get-CoverRect($pt) {
 function Keep-Topmost {
   if ($form.Visible) { [OverlayNative]::SetWindowPos($form.Handle, [IntPtr](-1), 0, 0, 0, 0, [uint32]0x0013) | Out-Null }
 }
+function Enable-DropTarget {
+  try { [OverlayNative]::AllowDropMessages($form.Handle) } catch {}
+  # Re-register after the HWND exists. Setting AllowDrop before Show, or on a
+  # window that was just created, can leave Explorer with nobody to drop on.
+  $form.AllowDrop = $false
+  $label.AllowDrop = $false
+  $form.AllowDrop = $true
+  $label.AllowDrop = $true
+}
 function Nudge-Cursor($pt) {
   if ($script:over -or -not (Test-MouseDown)) { return }
   if ($script:nudges -ge 12) { return }
   if (((Get-Date) - $script:lastNudge).TotalMilliseconds -lt 90) { return }
   $cx = $form.Left + [int]($form.Width / 2)
   $cy = $form.Top + [int]($form.Height / 2)
-  $nx = $pt.X + $(if ($pt.X -lt $cx) { 2 } else { -2 })
-  $ny = $pt.Y + $(if ($pt.Y -lt $cy) { 2 } else { -2 })
+  $nx = $pt.X + $(if ($pt.X -lt $cx) { 8 } else { -8 })
+  $ny = $pt.Y + $(if ($pt.Y -lt $cy) { 8 } else { -8 })
   $nx = [Math]::Max($form.Left + 12, [Math]::Min($form.Right - 12, $nx))
   $ny = [Math]::Max($form.Top + 12, [Math]::Min($form.Bottom - 12, $ny))
   [OverlayNative]::SetCursorPos([int]$nx, [int]$ny) | Out-Null
@@ -135,12 +151,15 @@ function Update-Cover([string]$id) {
   if (-not $same) { $script:nudges = 0; $script:over = $false }
   $script:shownId = $id
   $script:sessionId = $id
-  if (-not $form.Visible) { $form.Show() }
+  $wasVisible = [bool]$form.Visible
+  if (-not $wasVisible) { $form.Show() }
   [OverlayNative]::SetWindowPos($form.Handle, [IntPtr](-1), $bounds.X, $bounds.Y, $bounds.Width, $bounds.Height, [uint32]0x0050) | Out-Null
+  if (-not $wasVisible) { Enable-DropTarget }
   Nudge-Cursor (Get-CursorPoint)
 }
 function Send-Json([string]$url, [string]$json, [string]$method) {
   $req = [System.Net.HttpWebRequest]::Create($url)
+  $req.Proxy = $null
   $req.Method = $method
   $req.Timeout = 4000
   $req.Headers.Add('X-PS-Local-Voice', '1')
@@ -160,7 +179,9 @@ function Send-References($refs) {
     $name = ([string]$ref.name).Replace('\', '\\').Replace('"', '\"')
     '{"name":"' + $name + '","data":"' + [string]$ref.data + '"}'
   }
-  Send-Json ('http://127.0.0.1:17402/drop/upload?id=' + [uri]::EscapeDataString($script:sessionId)) ('{"references":[' + ($parts -join ',') + ']}') 'POST'
+  $url = 'http://127.0.0.1:17402/drop/upload?id=' + [uri]::EscapeDataString($script:sessionId)
+  $json = '{"references":[' + ($parts -join ',') + ']}'
+  try { Send-Json $url $json 'POST' } catch { Start-Sleep -Milliseconds 150; Send-Json $url $json 'POST' }
 }
 function Reference-FromFile([string]$file) {
   $info = [System.IO.FileInfo]::new($file)
@@ -168,18 +189,36 @@ function Reference-FromFile([string]$file) {
   $mime = switch ($info.Extension.ToLowerInvariant()) { '.jpg' { 'image/jpeg' } '.jpeg' { 'image/jpeg' } '.webp' { 'image/webp' } default { 'image/png' } }
   return @{ name = $info.Name; data = ('data:' + $mime + ';base64,' + [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($info.FullName))) }
 }
+function Test-FileDrag($data) {
+  foreach ($format in @([System.Windows.Forms.DataFormats]::FileDrop, 'FileNameW', 'FileName')) {
+    try { if ($data.GetDataPresent($format)) { return $true } } catch {}
+  }
+  return $false
+}
+function Get-DroppedFiles($data) {
+  foreach ($format in @([System.Windows.Forms.DataFormats]::FileDrop, 'FileNameW', 'FileName')) {
+    try {
+      if (-not $data.GetDataPresent($format)) { continue }
+      $raw = $data.GetData($format)
+      if ($null -eq $raw) { continue }
+      if ($raw -is [string]) { return @($raw) }
+      return @($raw)
+    } catch {}
+  }
+  return @()
+}
 $onEnter = {
   param($sender, $e)
   $script:over = $true
   $script:upSince = $null
-  if ($e.Data.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop)) { $e.Effect = [System.Windows.Forms.DragDropEffects]::Copy }
+  if (Test-FileDrag $e.Data) { $e.Effect = [System.Windows.Forms.DragDropEffects]::Copy }
   else { $e.Effect = [System.Windows.Forms.DragDropEffects]::None }
 }
 $onDrop = {
   param($sender, $e)
   $script:over = $true
   try {
-    $files = @($e.Data.GetData([System.Windows.Forms.DataFormats]::FileDrop) | Where-Object { [System.IO.Path]::GetExtension($_).ToLowerInvariant() -in '.png', '.jpg', '.jpeg', '.webp' -and [System.IO.File]::Exists($_) } | Select-Object -First 5)
+    $files = @(Get-DroppedFiles $e.Data | Where-Object { [System.IO.Path]::GetExtension([string]$_).ToLowerInvariant() -in '.png', '.jpg', '.jpeg', '.webp' -and [System.IO.File]::Exists([string]$_) } | Select-Object -First 5)
     if ($files.Count -gt 0) {
       $refs = @()
       foreach ($file in $files) { $refs += Reference-FromFile ([string]$file) }
@@ -205,6 +244,7 @@ $poll = {
   while (-not $state.stop) {
     try {
       $req = [System.Net.HttpWebRequest]::Create("http://127.0.0.1:17402/drop/overlay?wait=1&since=$since")
+      $req.Proxy = $null
       $req.Method = 'GET'
       $req.Timeout = 5000
       $req.Headers.Add('X-PS-Local-Voice', '1')
