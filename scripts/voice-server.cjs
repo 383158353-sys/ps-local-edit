@@ -96,7 +96,7 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
   let overlayReady = false;
   let overlayGen = 0;
   let overlayWaiters = [];
-  let overlayState = { action: 'idle', id: null, at: 0, x: null, y: null };
+  let overlayState = { action: 'idle', id: null, at: 0, x: null, y: null, left: null, top: null, width: null, height: null };
   function ensureOverlay() {
     if (overlayChild && overlayChild.exitCode == null && !overlayChild.killed) return overlayChild;
     const child = overlayLauncher();
@@ -109,14 +109,14 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
     return child;
   }
   function overlayView() {
-    return { action: overlayState.action, id: overlayState.id, at: overlayState.at, x: overlayState.x, y: overlayState.y, gen: overlayGen, ready: overlayReady };
+    return { action: overlayState.action, id: overlayState.id, at: overlayState.at, x: overlayState.x, y: overlayState.y, left: overlayState.left, top: overlayState.top, width: overlayState.width, height: overlayState.height, gen: overlayGen, ready: overlayReady };
   }
   function wakeOverlay() {
     const waiters = overlayWaiters.splice(0);
     for (const waiter of waiters) { try { waiter(); } catch (_) {} }
   }
   function publishOverlay(next) {
-    overlayState = { action: 'idle', id: null, x: null, y: null, at: Date.now(), ...next };
+    overlayState = { action: 'idle', id: null, x: null, y: null, left: null, top: null, width: null, height: null, at: Date.now(), ...next };
     overlayGen += 1;
     wakeOverlay();
   }
@@ -206,9 +206,14 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
         for(const [id,session] of dropSessions)if(Date.now()-session.createdAt>180000)dropSessions.delete(id);
         try{ensureOverlay();}catch(_){return reply(500,{message:'本机图片拖入服务未开启。'});}
         const id=randomUUID();dropSessions.set(id,{createdAt:Date.now(),references:[]});
-        const x=parsed&&Number.isFinite(parsed.x)?parsed.x:null;
-        const y=parsed&&Number.isFinite(parsed.y)?parsed.y:null;
-        publishOverlay({action:'show',id,at:Date.now(),x,y});
+        const num=value=>Number.isFinite(Number(value))?Number(value):null;
+        const x=num(parsed&&parsed.x);
+        const y=num(parsed&&parsed.y);
+        const left=num(parsed&&parsed.left);
+        const top=num(parsed&&parsed.top);
+        const width=num(parsed&&parsed.width);
+        const height=num(parsed&&parsed.height);
+        publishOverlay({action:'show',id,at:Date.now(),x,y,left,top,width,height});
         return reply(200,{id,ready:overlayReady});
       });
       return;

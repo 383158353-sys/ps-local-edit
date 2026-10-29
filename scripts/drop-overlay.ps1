@@ -1,9 +1,11 @@
 ﻿# Resident catch layer. The helper starts this process at boot.
-# While a drag is active the panel calls /drop/cover; a background poll wakes
-# immediately and this window covers the cursor so the same drop can read files.
-# It has no title bar and no taskbar button. Do not use a click-through style.
+# While a drag is active the panel calls /drop/cover with the on-screen
+# rectangle of #dropzone. This window covers only that box so Explorer can
+# drop onto it. No title bar, no taskbar button, never the whole desktop.
 # Do not set Form.Opacity. A value below 1 makes a layered window, and Windows
 # will not deliver an Explorer file drop to a layered window.
+# Do not call SetProcessDPIAware. Cursor.Position and this form then share
+# WinForms logical pixels, the same space as the panel's CSS screen rect.
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -45,8 +47,7 @@ public class OverlayNative {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 }
 '@
-[OverlayNative]::SetProcessDPIAware() | Out-Null
-$sync = [hashtable]::Synchronized(@{ action = 'idle'; id = ''; x = $null; y = $null; gen = 0; miss = 0; stop = $false })
+$sync = [hashtable]::Synchronized(@{ action = 'idle'; id = ''; x = $null; y = $null; left = $null; top = $null; width = $null; height = $null; gen = 0; miss = 0; stop = $false })
 $form = New-Object QuietDropForm
 $form.FormBorderStyle = 'None'
 $form.ShowInTaskbar = $false
@@ -55,16 +56,19 @@ $form.AllowDrop = $true
 $form.AutoScaleMode = 'None'
 $form.StartPosition = 'Manual'
 $form.Text = ''
-$form.BackColor = [System.Drawing.Color]::FromArgb(18, 72, 140)
-$form.Size = New-Object System.Drawing.Size(900, 700)
+# Same dark fill as the panel dropzone, with a 1px highlight so the box reads
+# as the dashed target without covering Photoshop.
+$form.Padding = New-Object System.Windows.Forms.Padding(1)
+$form.BackColor = [System.Drawing.Color]::FromArgb(138, 180, 255)
+$form.Size = New-Object System.Drawing.Size(104, 96)
 $label = New-Object System.Windows.Forms.Label
-$label.Text = "松手即可添加参考图"
+$label.Text = '松手添加'
 $label.Dock = 'Fill'
 $label.TextAlign = 'MiddleCenter'
 $label.AllowDrop = $true
-$label.ForeColor = [System.Drawing.Color]::White
-$label.BackColor = $form.BackColor
-try { $label.Font = New-Object System.Drawing.Font('Microsoft YaHei', 16) } catch {}
+$label.ForeColor = [System.Drawing.Color]::FromArgb(242, 242, 242)
+$label.BackColor = [System.Drawing.Color]::FromArgb(53, 53, 53)
+try { $label.Font = New-Object System.Drawing.Font('Microsoft YaHei', 9) } catch {}
 $form.Controls.Add($label)
 $script:shownId = ''
 $script:sessionId = ''
@@ -80,9 +84,12 @@ function Hide-Cover {
 }
 function Test-MouseDown { return ([OverlayNative]::GetAsyncKeyState(0x01) -band 0x8000) -ne 0 }
 function Get-CursorPoint {
+  # Logical pixels, same space as form.Bounds. GetCursorPos is physical and
+  # misses this window on a scaled display.
+  $cursor = [System.Windows.Forms.Cursor]::Position
   $pt = New-Object OverlayNative+POINT
-  $ok = [OverlayNative]::GetCursorPos([ref]$pt)
-  if (-not $ok -and $null -ne $sync.x -and $null -ne $sync.y) { $pt.X = [int]$sync.x; $pt.Y = [int]$sync.y }
+  $pt.X = [int]$cursor.X
+  $pt.Y = [int]$cursor.Y
   return $pt
 }
 function Test-Inside($pt) {
@@ -90,16 +97,14 @@ function Test-Inside($pt) {
   return $pt.X -ge ($form.Left + 8) -and $pt.Y -ge ($form.Top + 8) -and $pt.X -lt ($form.Right - 8) -and $pt.Y -lt ($form.Bottom - 8)
 }
 function Get-CoverRect($pt) {
-  # VirtualScreen is in the same coordinate space as this WinForms window.
-  # A 900x700 rect built from GetCursorPos is not: that API is physical pixels,
-  # and SetProcessDPIAware inside an already-started PowerShell process does
-  # not change the form. On a scaled display the catch layer missed the cursor,
-  # so Explorer released onto the UXP panel.
-  $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
-  if ($screen.Width -lt 100 -or $screen.Height -lt 100) {
-    return New-Object System.Drawing.Rectangle(0, 0, 1920, 1080)
+  $left = 0; $top = 0; $width = 0; $height = 0
+  try { $left = [int]$sync.left; $top = [int]$sync.top; $width = [int]$sync.width; $height = [int]$sync.height } catch {}
+  # Only the panel dropzone. A desktop-sized rect is what painted Photoshop blue.
+  if ($width -ge 40 -and $width -le 280 -and $height -ge 40 -and $height -le 280 -and $left -ge -8000 -and $left -le 16000 -and $top -ge -8000 -and $top -le 16000) {
+    return New-Object System.Drawing.Rectangle($left, $top, $width, $height)
   }
-  return New-Object System.Drawing.Rectangle($screen.X, $screen.Y, $screen.Width, $screen.Height)
+  $w = 104; $h = 96
+  return New-Object System.Drawing.Rectangle(($pt.X - 52), ($pt.Y - 48), $w, $h)
 }
 function Keep-Topmost {
   if ($form.Visible) { [OverlayNative]::SetWindowPos($form.Handle, [IntPtr](-1), 0, 0, 0, 0, [uint32]0x0013) | Out-Null }
@@ -118,7 +123,7 @@ function Pulse-Drag {
   if ($script:pulsed -or -not (Test-MouseDown)) { return }
   $script:pulsed = $true
   # DoDragDrop hit-tests on mouse movement. A window shown under a still
-  # cursor never receives DragEnter. One pixel stays on the full-screen target.
+  # cursor never receives DragEnter. One pixel stays on the dropzone-sized target.
   # Do not use SetCursorPos: the shell drag loop ignores it and the hotspot
   # drifts off the window.
   try { [OverlayNative]::PulseDrag() } catch {}
@@ -249,6 +254,10 @@ $poll = {
       $state.gen = [int]$view.gen
       $state.x = $view.x
       $state.y = $view.y
+      $state.left = $view.left
+      $state.top = $view.top
+      $state.width = $view.width
+      $state.height = $view.height
       $since = [int]$view.gen
       $state.miss = 0
     } catch {

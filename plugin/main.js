@@ -794,6 +794,21 @@ function dragPoint(event){
   const x=Number(event&&event.screenX),y=Number(event&&event.screenY),point={};
   if(Number.isFinite(x))point.x=x;
   if(Number.isFinite(y))point.y=y;
+  // CSS screen pixels match a DPI-unaware WinForms window. Send the in-panel
+  // dropzone rectangle so the catch layer sits on 「添加图片」, not the desktop.
+  const zone=$('dropzone');
+  const rect=zone&&typeof zone.getBoundingClientRect==='function'?zone.getBoundingClientRect():null;
+  if(!rect||!(rect.width>=40)||!(rect.height>=40)||rect.width>280||rect.height>280)return point;
+  const clientX=Number(event&&event.clientX),clientY=Number(event&&event.clientY);
+  let originX=Number.isFinite(x)&&Number.isFinite(clientX)?x-clientX:NaN;
+  let originY=Number.isFinite(y)&&Number.isFinite(clientY)?y-clientY:NaN;
+  if(!Number.isFinite(originX)&&typeof window!=='undefined')originX=Number(window.screenX);
+  if(!Number.isFinite(originY)&&typeof window!=='undefined')originY=Number(window.screenY);
+  if(!Number.isFinite(originX)||!Number.isFinite(originY))return point;
+  point.left=Math.round(originX+rect.left);
+  point.top=Math.round(originY+rect.top);
+  point.width=Math.round(rect.width);
+  point.height=Math.round(rect.height);
   return point;
 }
 function releaseDropOverlay(){
@@ -812,34 +827,6 @@ async function takeDroppedReferences(arm,images){
   voice.request('/drop/hide','POST').catch(()=>{});
   return true;
 }
-// The catch layer often never becomes the OLE target: it appears under a
-// still cursor, and Explorer keeps the drop on the UXP panel. The panel
-// then sees an empty drop and an empty poll. Open the normal drop window
-// and keep polling that session instead of reporting a timeout.
-async function openDropFallback(arm){
-  if(arm.fallback||arm.done||arm.token!==dropPollToken)return;
-  arm.fallback=true;
-  voice.request('/drop/hide','POST').catch(()=>{});
-  status('接图层没有接到这次拖放。请在弹出的窗口里再拖入图片，或按 Ctrl+V 粘贴。');
-  let opened;
-  try{opened=await voice.request('/drop/open','POST');}
-  catch(error){arm.done=true;status(dropHelperDown(error)?missDropMessage(true):'无法打开拖入窗口。可粘贴图片，或点「添加图片」。',true);return;}
-  if(!opened||!opened.id){arm.done=true;status('无法打开拖入窗口。可粘贴图片，或点「添加图片」。',true);return;}
-  arm.id=opened.id;
-  const until=Date.now()+120000;
-  while(arm.token===dropPollToken&&!arm.done&&Date.now()<until){
-    try{
-      const response=await voice.request('/drop/poll?id='+encodeURIComponent(arm.id));
-      if(arm.token!==dropPollToken||arm.done)return;
-      if(await takeDroppedReferences(arm,Array.isArray(response?.references)?response.references:[]))return;
-    }catch(error){
-      if(arm.token!==dropPollToken||arm.done)return;
-      if(dropHelperDown(error)){arm.done=true;status(missDropMessage(true),true);return;}
-    }
-    await new Promise(resolve=>setTimeout(resolve,300));
-  }
-  if(arm.token===dropPollToken&&!arm.done){arm.done=true;status('拖入窗口没有收到图片。可粘贴图片，或点「添加图片」。',true);}
-}
 async function pollArmedDrop(arm){
   const expires=arm.at+8000;
   while(arm.token===dropPollToken&&!arm.done&&Date.now()<expires){
@@ -852,12 +839,11 @@ async function pollArmedDrop(arm){
     }catch(error){
       if(arm.token!==dropPollToken||arm.done)return;
       if(dropHelperDown(error)){arm.failed=true;arm.helperDown=true;arm.done=true;if(arm.expecting)status(missDropMessage(true),true);return;}
-      if(/过期/.test(String(error&&error.message||''))){if(arm.expecting&&arm.id){await openDropFallback(arm);return;}arm.done=true;return;}
+      if(/过期/.test(String(error&&error.message||''))){arm.done=true;if(arm.expecting)status(missDropMessage(false),true);voice.request('/drop/hide','POST').catch(()=>{});return;}
     }
     await new Promise(resolve=>setTimeout(resolve,300));
   }
   if(arm.token!==dropPollToken||arm.done||!arm.expecting)return;
-  if(arm.id){await openDropFallback(arm);return;}
   arm.done=true;status(arm.ready?missDropMessage(false):startingDropMessage(),true);voice.request('/drop/hide','POST').catch(()=>{});
 }
 async function armDropOverlay(event){
