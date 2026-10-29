@@ -32,10 +32,14 @@ public class OverlayNative {
   [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vKey);
   [DllImport("user32.dll")] public static extern bool ChangeWindowMessageFilterEx(IntPtr hWnd, uint message, uint action, IntPtr pChangeFilterStruct);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, System.UIntPtr dwExtraInfo);
   public static void AllowDropMessages(IntPtr hwnd) {
     ChangeWindowMessageFilterEx(hwnd, 0x0049, 1, IntPtr.Zero); // WM_COPYGLOBALDATA
     ChangeWindowMessageFilterEx(hwnd, 0x004A, 1, IntPtr.Zero); // WM_COPYDATA
     ChangeWindowMessageFilterEx(hwnd, 0x0233, 1, IntPtr.Zero); // WM_DROPFILES
+  }
+  public static void PulseDrag() {
+    mouse_event(0x0001, 1, 0, 0, System.UIntPtr.Zero);
   }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
@@ -48,6 +52,7 @@ $form.FormBorderStyle = 'None'
 $form.ShowInTaskbar = $false
 $form.TopMost = $true
 $form.AllowDrop = $true
+$form.AutoScaleMode = 'None'
 $form.StartPosition = 'Manual'
 $form.Text = ''
 $form.BackColor = [System.Drawing.Color]::FromArgb(18, 72, 140)
@@ -65,13 +70,13 @@ $script:shownId = ''
 $script:sessionId = ''
 $script:holdOffId = ''
 $script:over = $false
-$script:nudges = 0
-$script:lastNudge = [datetime]::MinValue
 $script:upSince = $null
+$script:pulsed = $false
 function Hide-Cover {
   if ($form.Visible) { $form.Hide() }
   $script:shownId = ''
   $script:over = $false
+  $script:pulsed = $false
 }
 function Test-MouseDown { return ([OverlayNative]::GetAsyncKeyState(0x01) -band 0x8000) -ne 0 }
 function Get-CursorPoint {
@@ -85,77 +90,55 @@ function Test-Inside($pt) {
   return $pt.X -ge ($form.Left + 8) -and $pt.Y -ge ($form.Top + 8) -and $pt.X -lt ($form.Right - 8) -and $pt.Y -lt ($form.Bottom - 8)
 }
 function Get-CoverRect($pt) {
-  $width = 900
-  $height = 700
-  $left = $pt.X - 450
-  $top = $pt.Y - 350
-  $hwnd = [OverlayNative]::WindowFromPoint($pt)
-  $guard = 0
-  while ($hwnd -ne [IntPtr]::Zero -and $hwnd -ne $form.Handle -and $guard -lt 12) {
-    $rect = New-Object OverlayNative+RECT
-    if ([OverlayNative]::GetWindowRect($hwnd, [ref]$rect)) {
-      $w = $rect.Right - $rect.Left
-      $h = $rect.Bottom - $rect.Top
-      $contains = $pt.X -ge $rect.Left -and $pt.X -lt $rect.Right -and $pt.Y -ge $rect.Top -and $pt.Y -lt $rect.Bottom
-      if ($contains -and $w -ge 180 -and $h -ge 120 -and $w -le 1600 -and $h -le 2200) {
-        $uLeft = [Math]::Min($left, [int]$rect.Left)
-        $uTop = [Math]::Min($top, [int]$rect.Top)
-        $uRight = [Math]::Max($left + $width, [int]$rect.Right)
-        $uBottom = [Math]::Max($top + $height, [int]$rect.Bottom)
-        if (($uRight - $uLeft) -le 1700 -and ($uBottom - $uTop) -le 2300) {
-          $left = $uLeft; $top = $uTop; $width = $uRight - $uLeft; $height = $uBottom - $uTop
-        }
-      }
-    }
-    $next = [OverlayNative]::GetParent($hwnd)
-    if ($next -eq [IntPtr]::Zero -or $next -eq $hwnd) { break }
-    $hwnd = $next
-    $guard++
+  # VirtualScreen is in the same coordinate space as this WinForms window.
+  # A 900x700 rect built from GetCursorPos is not: that API is physical pixels,
+  # and SetProcessDPIAware inside an already-started PowerShell process does
+  # not change the form. On a scaled display the catch layer missed the cursor,
+  # so Explorer released onto the UXP panel.
+  $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+  if ($screen.Width -lt 100 -or $screen.Height -lt 100) {
+    return New-Object System.Drawing.Rectangle(0, 0, 1920, 1080)
   }
-  return New-Object System.Drawing.Rectangle($left, $top, [Math]::Max(480, $width), [Math]::Max(360, $height))
+  return New-Object System.Drawing.Rectangle($screen.X, $screen.Y, $screen.Width, $screen.Height)
 }
 function Keep-Topmost {
   if ($form.Visible) { [OverlayNative]::SetWindowPos($form.Handle, [IntPtr](-1), 0, 0, 0, 0, [uint32]0x0013) | Out-Null }
 }
+$script:dropRegistered = $false
 function Enable-DropTarget {
   try { [OverlayNative]::AllowDropMessages($form.Handle) } catch {}
-  # Re-register after the HWND exists. Setting AllowDrop before Show, or on a
-  # window that was just created, can leave Explorer with nobody to drop on.
-  $form.AllowDrop = $false
-  $label.AllowDrop = $false
+  # Register once, before a drag exists. Toggling AllowDrop off while Explorer
+  # is already dragging revokes the OLE target and the release stays on UXP.
+  if ($script:dropRegistered) { return }
   $form.AllowDrop = $true
   $label.AllowDrop = $true
+  $script:dropRegistered = $true
 }
-function Nudge-Cursor($pt) {
-  if ($script:over -or -not (Test-MouseDown)) { return }
-  if ($script:nudges -ge 12) { return }
-  if (((Get-Date) - $script:lastNudge).TotalMilliseconds -lt 90) { return }
-  $cx = $form.Left + [int]($form.Width / 2)
-  $cy = $form.Top + [int]($form.Height / 2)
-  $nx = $pt.X + $(if ($pt.X -lt $cx) { 8 } else { -8 })
-  $ny = $pt.Y + $(if ($pt.Y -lt $cy) { 8 } else { -8 })
-  $nx = [Math]::Max($form.Left + 12, [Math]::Min($form.Right - 12, $nx))
-  $ny = [Math]::Max($form.Top + 12, [Math]::Min($form.Bottom - 12, $ny))
-  [OverlayNative]::SetCursorPos([int]$nx, [int]$ny) | Out-Null
-  $script:nudges++
-  $script:lastNudge = Get-Date
+function Pulse-Drag {
+  if ($script:pulsed -or -not (Test-MouseDown)) { return }
+  $script:pulsed = $true
+  # DoDragDrop hit-tests on mouse movement. A window shown under a still
+  # cursor never receives DragEnter. One pixel stays on the full-screen target.
+  # Do not use SetCursorPos: the shell drag loop ignores it and the hotspot
+  # drifts off the window.
+  try { [OverlayNative]::PulseDrag() } catch {}
 }
 function Update-Cover([string]$id) {
   if ($script:holdOffId -eq $id) { return }
   $pt = Get-CursorPoint
   $same = $script:shownId -eq $id -and $form.Visible
   if ($same -and $script:over) { Keep-Topmost; return }
-  if ($same -and (Test-Inside $pt)) { Keep-Topmost; Nudge-Cursor $pt; return }
+  if ($same -and (Test-Inside $pt)) { Keep-Topmost; Pulse-Drag; return }
   $bounds = Get-CoverRect $pt
   $form.Bounds = $bounds
-  if (-not $same) { $script:nudges = 0; $script:over = $false }
+  if (-not $same) { $script:over = $false }
   $script:shownId = $id
   $script:sessionId = $id
   $wasVisible = [bool]$form.Visible
   if (-not $wasVisible) { $form.Show() }
   [OverlayNative]::SetWindowPos($form.Handle, [IntPtr](-1), $bounds.X, $bounds.Y, $bounds.Width, $bounds.Height, [uint32]0x0050) | Out-Null
-  if (-not $wasVisible) { Enable-DropTarget }
-  Nudge-Cursor (Get-CursorPoint)
+  Enable-DropTarget
+  Pulse-Drag
 }
 function Send-Json([string]$url, [string]$json, [string]$method) {
   $req = [System.Net.HttpWebRequest]::Create($url)
@@ -237,6 +220,14 @@ $label.Add_DragDrop($onDrop)
 $form.Add_DragLeave({ $script:over = $false })
 $label.Add_DragLeave({ $script:over = $false })
 $null = $form.Handle
+# Create the drop target before any drag. Showing off-screen once lets
+# AllowDrop stick; later covers only move the window.
+try {
+  $form.Bounds = New-Object System.Drawing.Rectangle(-32000, -32000, 10, 10)
+  $form.Show()
+  Enable-DropTarget
+  $form.Hide()
+} catch {}
 try { Send-Json 'http://127.0.0.1:17402/drop/ready' '' 'POST' } catch {}
 $poll = {
   param($state)

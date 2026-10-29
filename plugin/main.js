@@ -803,30 +803,62 @@ function releaseDropOverlay(){
   if(armed)voice.request('/drop/hide','POST').catch(()=>{});
 }
 function prewarmDropOverlay(){voice.request('/drop/arm','POST').catch(()=>{});}
+function dropGraceMs(){const override=typeof globalThis!=='undefined'?Number(globalThis.__lk888DropGraceMs):NaN;return override>0?override:3500;}
+async function takeDroppedReferences(arm,images){
+  if(!images.length)return false;
+  arm.done=true;
+  if(arm.jobId!==selectedJobId){status('拖入的图片所属编辑已切换，未加入当前参考图。',true);return true;}
+  await addReferencePayloads(images,arm.target||null);
+  voice.request('/drop/hide','POST').catch(()=>{});
+  return true;
+}
+// The catch layer often never becomes the OLE target: it appears under a
+// still cursor, and Explorer keeps the drop on the UXP panel. The panel
+// then sees an empty drop and an empty poll. Open the normal drop window
+// and keep polling that session instead of reporting a timeout.
+async function openDropFallback(arm){
+  if(arm.fallback||arm.done||arm.token!==dropPollToken)return;
+  arm.fallback=true;
+  voice.request('/drop/hide','POST').catch(()=>{});
+  status('接图层没有接到这次拖放。请在弹出的窗口里再拖入图片，或按 Ctrl+V 粘贴。');
+  let opened;
+  try{opened=await voice.request('/drop/open','POST');}
+  catch(error){arm.done=true;status(dropHelperDown(error)?missDropMessage(true):'无法打开拖入窗口。可粘贴图片，或点「添加图片」。',true);return;}
+  if(!opened||!opened.id){arm.done=true;status('无法打开拖入窗口。可粘贴图片，或点「添加图片」。',true);return;}
+  arm.id=opened.id;
+  const until=Date.now()+120000;
+  while(arm.token===dropPollToken&&!arm.done&&Date.now()<until){
+    try{
+      const response=await voice.request('/drop/poll?id='+encodeURIComponent(arm.id));
+      if(arm.token!==dropPollToken||arm.done)return;
+      if(await takeDroppedReferences(arm,Array.isArray(response?.references)?response.references:[]))return;
+    }catch(error){
+      if(arm.token!==dropPollToken||arm.done)return;
+      if(dropHelperDown(error)){arm.done=true;status(missDropMessage(true),true);return;}
+    }
+    await new Promise(resolve=>setTimeout(resolve,300));
+  }
+  if(arm.token===dropPollToken&&!arm.done){arm.done=true;status('拖入窗口没有收到图片。可粘贴图片，或点「添加图片」。',true);}
+}
 async function pollArmedDrop(arm){
   const expires=arm.at+8000;
   while(arm.token===dropPollToken&&!arm.done&&Date.now()<expires){
     if(arm.expecting&&!arm.dropAt)arm.dropAt=Date.now();
-    if(arm.dropAt&&Date.now()-arm.dropAt>3500)break;
+    if(arm.dropAt&&Date.now()-arm.dropAt>dropGraceMs())break;
     try{
       const response=await voice.request('/drop/poll?id='+encodeURIComponent(arm.id));
       if(arm.token!==dropPollToken||arm.done)return;
-      const images=Array.isArray(response?.references)?response.references:[];
-      if(images.length){
-        arm.done=true;
-        if(arm.jobId!==selectedJobId){status('拖入的图片所属编辑已切换，未加入当前参考图。',true);return;}
-        await addReferencePayloads(images,arm.target||null);
-        voice.request('/drop/hide','POST').catch(()=>{});
-        return;
-      }
+      if(await takeDroppedReferences(arm,Array.isArray(response?.references)?response.references:[]))return;
     }catch(error){
       if(arm.token!==dropPollToken||arm.done)return;
       if(dropHelperDown(error)){arm.failed=true;arm.helperDown=true;arm.done=true;if(arm.expecting)status(missDropMessage(true),true);return;}
-      if(/过期/.test(String(error&&error.message||''))){arm.done=true;if(arm.expecting)status(missDropMessage(false),true);return;}
+      if(/过期/.test(String(error&&error.message||''))){if(arm.expecting&&arm.id){await openDropFallback(arm);return;}arm.done=true;return;}
     }
     await new Promise(resolve=>setTimeout(resolve,300));
   }
-  if(arm.token===dropPollToken&&arm.expecting&&!arm.done){arm.done=true;status(arm.ready?missDropMessage(false):startingDropMessage(),true);voice.request('/drop/hide','POST').catch(()=>{});}
+  if(arm.token!==dropPollToken||arm.done||!arm.expecting)return;
+  if(arm.id){await openDropFallback(arm);return;}
+  arm.done=true;status(arm.ready?missDropMessage(false):startingDropMessage(),true);voice.request('/drop/hide','POST').catch(()=>{});
 }
 async function armDropOverlay(event){
   if(dropArm&&!dropArm.done&&Date.now()-dropArm.at<8000&&(!dropArm.failed||Date.now()-dropArm.at<1200))return;
