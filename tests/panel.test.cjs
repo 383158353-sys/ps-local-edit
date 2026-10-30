@@ -38,7 +38,7 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
     if (name === 'photoshop') return { app, imaging: { encodeImageData: async () => 'YWJj' }, constants: { DocumentMode: { RGB: 'RGB' } } };
     if (name === 'uxp') return { storage };
     if (name === './modules/ps') return ps;if(name==='./modules/geometry')return require('../plugin/modules/geometry');
-    if(name==='./prompt-editor')return require('../plugin/prompt-editor');if(name==='./voice'){const Base=require('../plugin/voice').VoiceController;return {VoiceController:class extends Base{constructor(options){super({...options,fetchImpl:fetch});}}};}if(name==='./optimizer')return {OptimizerClient:class{cancel(){optimizerCancels++;}optimize(input){optimizerCalls.push(input);if(optimizerDeferred)return new Promise(resolve=>{resolveOptimize=resolve;});return Promise.resolve({prompt:'优化后的修改要求',images:[{name:'影词新增.png',data:'data:image/png;base64,YWJj'}]});}}};if(name==='./task-queue')return {TaskQueue};if(name==='./png')return {pngRGBA};
+    if(name==='./prompt-editor')return require('../plugin/prompt-editor');if(name==='./voice'){const Base=require('../plugin/voice').VoiceController;return {VoiceController:class extends Base{constructor(options){super({...options,fetchImpl:fetch});}}};}if(name==='./optimizer')return {OptimizerClient:class{cancel(){optimizerCancels++;}optimize(input){optimizerCalls.push(input);if(optimizerDeferred)return new Promise(resolve=>{resolveOptimize=resolve;});return Promise.resolve({prompt:'优化后的修改要求',images:[{name:'影词新增.png',data:'data:image/png;base64,YWJj'}]});}}};if(name==='./optimize-image')return require('../plugin/optimize-image');if(name==='./task-queue')return {TaskQueue};if(name==='./png')return {pngRGBA};
     if (name === './modules/fs') return { arrayBufferToBase64:v=>Buffer.from(v).toString('base64'), base64ToArrayBuffer: v => {imageDecodes++;return Uint8Array.from(Buffer.from(v, 'base64')).buffer;} };
     if (name === './api') return { ...api, MediaClient: Client };
     if (name === './model-selection') return require('../plugin/model-selection');
@@ -82,6 +82,7 @@ test('optimizer maps selection and references in order, fills prompt and support
  await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[{name:'参考.png',size:1,arrayBuffer:async()=>Uint8Array.from([2]).buffer}]}});
  h.nodes.prompt.value='改成红色';await h.nodes['optimize-prompt'].click();
  assert.equal(h.optimizerCalls.length,1);assert.equal(h.optimizerCalls[0].target,'banana2');assert.equal(h.optimizerCalls[0].images.length,2);assert.equal(h.optimizerCalls[0].images[0].name,'选区.png');assert.equal(h.optimizerCalls[0].images[1].name,'参考.png');
+ assert.equal(h.optimizerCalls[0].images[0].data,h.nodes.preview.src);
  assert.equal(h.nodes.prompt.value,'优化后的修改要求');assert.equal(h.nodes['undo-optimize'].style.display,'inline-block');
  assert.equal(h.nodes['reference-thumbs'].children.length,2);assert.equal(h.nodes['reference-thumbs'].children[1].children[2].textContent,'影词新增.png');
  let prevented=false;await h.nodes.prompt.keydown({ctrlKey:true,key:'z',preventDefault(){prevented=true;},stopPropagation(){}});assert.equal(prevented,true);assert.equal(h.nodes.prompt.value,'改成红色');
