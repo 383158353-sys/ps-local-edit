@@ -165,20 +165,24 @@ test('drop read returns local image bytes and rejects anything that is not an im
   const server=createVoiceServer({spawnWorker:()=>{const child=fakeChild();setImmediate(()=>child.emit('exit',0));return child;},pathReader:async file=>{read.push(file);if(file.endsWith('.jpg'))return Buffer.from('jpeg-bytes');return Buffer.from('png-bytes');}});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const base='http://127.0.0.1:'+server.address().port,headers={'X-PS-Local-Voice':'1','Content-Type':'application/json'};
+  const isMac=process.platform==='darwin';
+  const good=isMac?['/Users/demo/pics/参考.png','/tmp/img/第二张.jpg']:['C:\\pics\\参考.png','D:/img/第二张.jpg'];
+  const expected=isMac?['/Users/demo/pics/参考.png','/tmp/img/第二张.jpg']:['C:\\pics\\参考.png','D:\\img\\第二张.jpg'];
+  const badList=isMac?[['/Users/demo/pics/secret.txt'],['../secret.png'],['notes.png'],['/Users/demo/../etc/passwd.png']]:[['C:\\pics\\secret.txt'],['..\\secret.png'],['notes.png'],['C:\\pics\\..\\Windows\\a.png']];
   try{
-    const ok=await fetch(base+'/drop/read',{method:'POST',headers,body:JSON.stringify({paths:['C:\\pics\\参考.png','D:/img/第二张.jpg']})});
+    const ok=await fetch(base+'/drop/read',{method:'POST',headers,body:JSON.stringify({paths:good})});
     assert.equal(ok.status,200);
     const body=await ok.json();
-    assert.deepEqual(read,['C:\\pics\\参考.png','D:\\img\\第二张.jpg']);
+    assert.deepEqual(read,expected);
     assert.equal(body.references[0].name,'参考.png');
     assert.equal(body.references[0].data,'data:image/png;base64,'+Buffer.from('png-bytes').toString('base64'));
     assert.equal(body.references[1].name,'第二张.jpg');
     assert.match(body.references[1].data,/^data:image\/jpeg;base64,/);
-    for (const paths of [['C:\\pics\\secret.txt'],['..\\secret.png'],['notes.png'],['C:\\pics\\..\\Windows\\a.png']]){
+    for (const paths of badList){
       const bad=await fetch(base+'/drop/read',{method:'POST',headers,body:JSON.stringify({paths})});
       assert.equal(bad.status,400);
     }
-    assert.deepEqual(read,['C:\\pics\\参考.png','D:\\img\\第二张.jpg']);
+    assert.deepEqual(read,expected);
   }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
 test('local annotation window returns a saved PNG exactly once',async()=>{

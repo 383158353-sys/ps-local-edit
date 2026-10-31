@@ -1,16 +1,53 @@
-// Loopback-only, on-demand Windows dictation. No audio or transcript is sent online.
+// Loopback-only local helper for UXP panel. Windows uses PowerShell workers;
+// macOS degrades gracefully (clipboard via osascript; voice/drop overlay deferred).
 const http = require('node:http');
 const https = require('node:https');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
+const { EventEmitter } = require('node:events');
+const { PassThrough } = require('node:stream');
 const path = require('node:path');
+const fs = require('node:fs');
 const fsPromises = require('node:fs/promises');
+const os = require('node:os');
 const PORT = 17402;
+const IS_WIN = process.platform === 'win32';
+const IS_MAC = process.platform === 'darwin';
 // Adobe's UXP WebView posts messages with the plugin ID as its origin. Keep
 // the local clipboard API restricted to this plugin origin (plus native calls
 // without an Origin header) rather than reflecting arbitrary website origins.
 const UXP_ORIGINS = new Set(['com.local.lk888.psedit','plugin://com.local.lk888.psedit','uxp://com.local.lk888.psedit']);
+
+function fakeChildProcess() {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.stdin = new PassThrough();
+  child.killed = false;
+  child.exitCode = null;
+  child.kill = () => {
+    if (child.exitCode != null) return;
+    child.killed = true;
+    child.exitCode = 0;
+    child.emit('exit', 0);
+  };
+  return child;
+}
+
+function unsupportedSpeechWorker(_probe = false) {
+  const child = fakeChildProcess();
+  const message = IS_MAC
+    ? 'macOS 本机听写尚未接入。请用键盘输入，或使用系统听写（可在「键盘」设置中开启）。'
+    : '当前系统不支持本机 Windows 中文听写引擎。';
+  process.nextTick(() => {
+    try { child.stdout.write(JSON.stringify({ type: 'error', message }) + '\n'); } catch (_) {}
+    child.kill();
+  });
+  return child;
+}
+
 function worker(probe = false) {
+  if (!IS_WIN) return unsupportedSpeechWorker(probe);
   return spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'voice-worker.ps1'), ...(probe ? ['-Probe'] : [])], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
 }
 function readEvents(child, onEvent) {
@@ -26,7 +63,7 @@ function readEvents(child, onEvent) {
   });
   child.stderr.on('data', () => {}); // Do not log transcripts or platform diagnostics.
 }
-function readClipboard() {
+function readClipboardWindows() {
   return new Promise((resolve,reject)=>{
     const child=spawn('powershell.exe',['-NoProfile','-NonInteractive','-Sta','-ExecutionPolicy','Bypass','-File',path.join(__dirname,'clipboard-worker.ps1')],{windowsHide:true,stdio:['ignore','pipe','pipe']});
     let output='';const timer=setTimeout(()=>{child.kill();reject(new Error('读取剪贴板超时，请重试。'));},20000);
@@ -36,24 +73,91 @@ function readClipboard() {
     child.on('exit',()=>{clearTimeout(timer);try{const data=JSON.parse(output.trim());if(data.error)reject(new Error(data.error));else resolve(data);}catch(_){reject(new Error('读取剪贴板失败。'));}});
   });
 }
+function readClipboardMac() {
+  return new Promise((resolve, reject) => {
+    const tmp = path.join(os.tmpdir(), `ps-local-clip-${randomUUID()}.png`);
+    const escaped = tmp.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const script = [
+      'set outPath to POSIX file "' + escaped + '"',
+      'try',
+      '  set pngData to the clipboard as «class PNGf»',
+      '  set fileRef to open for access outPath with write permission',
+      '  set eof of fileRef to 0',
+      '  write pngData to fileRef',
+      '  close access fileRef',
+      '  return "IMAGE"',
+      'on error',
+      '  try',
+      '    return "TEXT:" & (the clipboard as text)',
+      '  on error',
+      '    return "EMPTY"',
+      '  end try',
+      'end try',
+    ].join('\n');
+    const child = spawn('osascript', ['-e', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    const timer = setTimeout(() => { child.kill(); reject(new Error('读取剪贴板超时，请重试。')); }, 20000);
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.on('error', () => { clearTimeout(timer); reject(new Error('无法读取本机剪贴板（需要 osascript）。')); });
+    child.on('exit', async () => {
+      clearTimeout(timer);
+      const result = output.trim();
+      try {
+        if (result === 'IMAGE' || result.startsWith('IMAGE')) {
+          const bytes = await fsPromises.readFile(tmp);
+          try { await fsPromises.unlink(tmp); } catch (_) {}
+          if (!bytes.length) return reject(new Error('剪贴板图片为空。'));
+          if (bytes.length > 14 * 1024 * 1024) return reject(new Error('截图太大，请缩小范围后重试。'));
+          return resolve({ image: 'data:image/png;base64,' + bytes.toString('base64') });
+        }
+        try { await fsPromises.unlink(tmp); } catch (_) {}
+        if (result.startsWith('TEXT:')) {
+          const text = result.slice(5);
+          if (text) return resolve({ text });
+        }
+        resolve({});
+      } catch (error) {
+        try { await fsPromises.unlink(tmp); } catch (_) {}
+        reject(new Error(error.message || '读取剪贴板失败。'));
+      }
+    });
+  });
+}
+function readClipboard() {
+  if (IS_WIN) return readClipboardWindows();
+  if (IS_MAC) return readClipboardMac();
+  return Promise.reject(new Error('当前系统暂不支持本机剪贴板助手。'));
+}
 function openDropWindow(id) {
+  if (!IS_WIN) return null;
   return spawn('powershell.exe',['-NoProfile','-Sta','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',path.join(__dirname,'drop-window.ps1'),'-SessionId',id],{windowsHide:false,stdio:'ignore'});
 }
 function openDropOverlay() {
+  if (!IS_WIN) return null;
   return spawn('powershell.exe',['-NoProfile','-Sta','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',path.join(__dirname,'drop-overlay.ps1')],{windowsHide:true,stdio:'ignore'});
+}
+function pathApi() {
+  // Tests on Linux still pass Windows paths; only darwin uses POSIX rules at runtime.
+  return IS_MAC ? path.posix : path.win32;
 }
 function droppedImagePath(value) {
   if (typeof value !== 'string' || value.length > 1024 || value.includes('\0')) return '';
   if (value.split(/[\\/]/).some(part => part === '..' || part === '.')) return '';
-  const native = path.win32.normalize(value);
-  const ext = path.win32.extname(native).toLowerCase();
+  const api = pathApi();
+  const native = api.normalize(value);
+  const ext = api.extname(native).toLowerCase();
   if (!['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) return '';
-  if (!path.win32.isAbsolute(native)) return '';
+  if (!api.isAbsolute(native)) return '';
+  if (IS_MAC) {
+    if (!native.startsWith('/')) return '';
+    return native;
+  }
   if (!/^[A-Za-z]:\\/.test(native) && !native.startsWith('\\\\')) return '';
   return native;
 }
 function imageDataUrl(filePath, bytes) {
-  const ext = path.win32.extname(filePath).toLowerCase();
+  const ext = pathApi().extname(filePath).toLowerCase();
   const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'image/png';
   return 'data:' + mime + ';base64,' + Buffer.from(bytes).toString('base64');
 }
@@ -63,6 +167,7 @@ async function readDroppedFile(filePath) {
   return fsPromises.readFile(filePath);
 }
 function openAnnotationWindow(id) {
+  if (!IS_WIN) return null;
   return spawn('powershell.exe',['-NoProfile','-Sta','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',path.join(__dirname,'annotation-window.ps1'),'-SessionId',id],{windowsHide:false,stdio:'ignore'});
 }
 function forwardGenerate(raw) {
@@ -137,7 +242,7 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
     if (event.type === 'ready') readiness = {state:'ready', language:event.language};
     if (event.type === 'error') readiness = {state:'error', message:'本机中文语音引擎不可用：' + event.message};
   });
-  probe.on('error', () => { readiness = {state:'error', message:'无法启动 Windows 中文语音引擎。'}; clearTimeout(probeTimer); });
+  probe.on('error', () => { readiness = {state:'error', message: IS_WIN ? '无法启动 Windows 中文语音引擎。' : '本机语音引擎不可用。'}; clearTimeout(probeTimer); });
   probe.on('exit', () => { clearTimeout(probeTimer); if(readiness.state==='starting') readiness={state:'error',message:'中文语音引擎未能初始化。'}; });
   function stop(session) {
     if (['starting','listening'].includes(session.state)) {
@@ -182,7 +287,7 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
             let bytes;
             try{bytes=await pathReader(native);}catch(_){throw new Error('拖入的图片无法读取。');}
             if(!bytes||bytes.length<1||bytes.length>10*1024*1024)throw new Error('每张图片不超过 10MB。');
-            references.push({name:path.win32.basename(native).slice(0,150),data:imageDataUrl(native,bytes)});
+            references.push({name:pathApi().basename(native).slice(0,150),data:imageDataUrl(native,bytes)});
           }
           reply(200,{references});
         }).catch(error=>reply(400,{message:error.message||'图片无效。'}));
@@ -192,11 +297,11 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
     if(url.pathname==='/drop/open'&&request.method==='POST'){
       for(const [id,session] of dropSessions)if(Date.now()-session.createdAt>180000)dropSessions.delete(id);
       const id=randomUUID();dropSessions.set(id,{createdAt:Date.now(),references:[]});
-      try{const child=dropWindowLauncher(id);child?.on?.('error',()=>dropSessions.delete(id));return reply(200,{id});}
+      try{const child=dropWindowLauncher(id);if(!child){dropSessions.delete(id);return reply(501,{message:'当前系统暂不支持独立拖入窗口。请用粘贴或「添加图片」。'});}child?.on?.('error',()=>dropSessions.delete(id));return reply(200,{id});}
       catch(_){dropSessions.delete(id);return reply(500,{message:'无法打开本机拖入窗口。'});}
     }
     if(url.pathname==='/drop/arm'&&request.method==='POST'){
-      try{ensureOverlay();return reply(200,{state:overlayReady?'ready':'starting',ready:overlayReady});}
+      try{const child=ensureOverlay();if(!child)return reply(501,{message:'当前系统暂不支持拖入接图层。请用粘贴或「添加图片」。'});return reply(200,{state:overlayReady?'ready':'starting',ready:overlayReady});}
       catch(_){return reply(500,{message:'本机图片拖入服务未开启。'});}
     }
     if(url.pathname==='/drop/ready'&&request.method==='POST'){overlayReady=true;return reply(200,{state:'ready',gen:overlayGen});}
@@ -204,7 +309,7 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
       readJsonBody(request, 4096, parsed => {
         if(parsed===null)return reply(400,{message:'拖入位置无效。'});
         for(const [id,session] of dropSessions)if(Date.now()-session.createdAt>180000)dropSessions.delete(id);
-        try{ensureOverlay();}catch(_){return reply(500,{message:'本机图片拖入服务未开启。'});}
+        try{const child=ensureOverlay();if(!child)return reply(501,{message:'当前系统暂不支持拖入接图层。请用粘贴或「添加图片」。'});}catch(_){return reply(500,{message:'本机图片拖入服务未开启。'});}
         const id=randomUUID();dropSessions.set(id,{createdAt:Date.now(),references:[]});
         const num=value=>Number.isFinite(Number(value))?Number(value):null;
         const x=num(parsed&&parsed.x);
@@ -243,7 +348,7 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
     }
     if(url.pathname==='/annotate/open'&&request.method==='POST'){
       let body='';request.setEncoding('utf8');request.on('data',chunk=>{body+=chunk;if(body.length>14*1024*1024)request.destroy();});
-      request.on('end',()=>{try{const image=JSON.parse(body).image;if(typeof image!=='string'||image.length>14*1024*1024||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(image))throw Error('标注图片无效或过大。');for(const [id,session] of annotationSessions)if(Date.now()-session.createdAt>600000)annotationSessions.delete(id);const id=randomUUID(),session={createdAt:Date.now(),image,result:null,error:null};annotationSessions.set(id,session);const child=annotationWindowLauncher(id);child?.on?.('error',()=>{session.error='本机标注窗口启动失败。';});child?.on?.('exit',()=>{if(!session.result)session.error='标注窗口已关闭，未保存图片。';});reply(200,{id});}catch(error){reply(400,{message:error.message||'无法打开标注窗口。'});}});return;
+      request.on('end',()=>{try{const image=JSON.parse(body).image;if(typeof image!=='string'||image.length>14*1024*1024||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i.test(image))throw Error('标注图片无效或过大。');for(const [id,session] of annotationSessions)if(Date.now()-session.createdAt>600000)annotationSessions.delete(id);const id=randomUUID(),session={createdAt:Date.now(),image,result:null,error:null};annotationSessions.set(id,session);const child=annotationWindowLauncher(id);if(!child){annotationSessions.delete(id);return reply(501,{message:'当前系统暂不支持本机标注窗口。请在 Photoshop 内处理后导出。'});}child?.on?.('error',()=>{session.error='本机标注窗口启动失败。';});child?.on?.('exit',()=>{if(!session.result)session.error='标注窗口已关闭，未保存图片。';});reply(200,{id});}catch(error){reply(400,{message:error.message||'无法打开标注窗口。'});}});return;
     }
     if(url.pathname.startsWith('/annotate/')){
       const id=url.searchParams.get('id'),session=annotationSessions.get(id);
@@ -321,4 +426,4 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
   return server;
 }
 if(require.main===module){const server=createVoiceServer();server.on('error',error=>{if(error.code!=='EADDRINUSE'){console.error('本机语音服务无法启动。');process.exitCode=1;}});server.listen(PORT,'127.0.0.1',()=>{try{server.ensureOverlay();}catch(_){}});}
-module.exports={createVoiceServer,PORT};
+module.exports={createVoiceServer,PORT,droppedImagePath,IS_WIN,IS_MAC};

@@ -27,7 +27,7 @@ Photoshop 内的简洁 UXP 面板，通过 https://api.lk888.ai 调用生图模�
 5. 在 RGB 文档选择区域，点击更新选区，输入要求后生成。
 6. 生成完成后点击候选图添加图层。放大查看与添加操作分开。
 
-Windows 上也可运行 `scripts/install-plugin-autoload.ps1` 添加登录启动项。启动后它会在 Photoshop 每次打开时重新注册开发版插件，无需手动运行 `打开局部改图插件.cmd`。这是本机开发加载的自动恢复入口，不等于 Adobe Marketplace 正式安装。
+macOS 可双击 `打开局部改图插件.command`。Windows 上也可运行 `scripts/install-plugin-autoload.ps1` 添加登录启动项。启动后它会在 Photoshop 每次打开时重新注册开发版插件，无需手动运行 `打开局部改图插件.cmd`。这是本机开发加载的自动恢复入口，不等于 Adobe Marketplace 正式安装。
 
 密钥保存在本机 UXP secureStorage。模型 ID 以 LK888 API 返回为准；若某预设 ID 与账号提供的模型 ID 不一致，可在设置页配置自定义 ID。模型可用性、速度及费用以平台账号为准。一次生成多张会提交多个任务。
 
@@ -43,6 +43,12 @@ Windows 打包：
 
 ```powershell
 ./scripts/package.ps1
+
+跨平台：
+
+```bash
+node scripts/package.mjs
+```
 ```
 
 浏览器检查脚本使用 Playwright；本机版本引用了本地运行时路径，其他环境需调整引用。

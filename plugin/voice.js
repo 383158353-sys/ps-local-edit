@@ -1,4 +1,4 @@
-// Talks only to the user's local Windows helper, never to the image API.
+// Talks only to the user's local helper (Win PowerShell / Mac osascript), never to the image API.
 class VoiceController {
   constructor({fetchImpl=fetch,onState=()=>{},onText=()=>{},context=()=>null}={}) {
     this.fetch=fetchImpl;this.onState=onState;this.onText=onText;this.context=context;
@@ -26,7 +26,7 @@ class VoiceController {
     } catch(error) {
       if(preparing)throw new Error('本机助手未开启。');
       if(error.sessionGone)throw error;
-      if(error.name==='AbortError'||/fetch|network|connect/i.test(error.message||''))throw new Error((path.startsWith('/clipboard')?'本机截图粘贴服务':path.startsWith('/drop')?'本机图片拖入服务':path.startsWith('/annotate')?'本机图片标注服务':'本机语音服务')+'未连接。请双击“打开局部改图插件.cmd”后重试。');
+      if(error.name==='AbortError'||/fetch|network|connect/i.test(error.message||''))throw new Error((path.startsWith('/clipboard')?'本机截图粘贴服务':path.startsWith('/drop')?'本机图片拖入服务':path.startsWith('/annotate')?'本机图片标注服务':'本机语音服务')+'未连接。请运行「打开局部改图插件」（Windows 用 .cmd，Mac 用 .command）后重试。');
       throw error;
     } finally {clearTimeout(timer);}
   }

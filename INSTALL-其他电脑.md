@@ -3,7 +3,7 @@
 ## 方式 A：跟影词魔方一起装（推荐）
 
 1. 打开 https://github.com/383158353-sys/cine-prompt/releases
-2. 下载并安装最新 `CinePrompt-Photoshop-Windows.exe`
+2. Windows：下载并安装最新 `CinePrompt-Photoshop-Windows.exe`；macOS：下载 `CinePrompt-Photoshop-Mac.dmg`（或 zip）
 3. 打开 Photoshop → 增效工具 → 打开「局部改图」面板
 4. 在面板设置里填写自己的 LK888 API Key（只保存在本机）
 
@@ -11,10 +11,10 @@
 
 1. `git clone https://github.com/383158353-sys/ps-local-edit.git`
 2. 任选其一：
-   - 双击 `dist/局部改图-LK888-0.1.8.ccx`（Creative Cloud 可装时）
+   - 双击 `dist/局部改图-LK888-0.1.19.ccx`（Creative Cloud 可装时）
    - 或用 Adobe UXP Developer Tool 添加 `plugin/manifest.json` → Load
    - 或在 PowerShell 运行：`./scripts/install-plugin-autoload.ps1`（登录后自动向 PS 注册开发版插件）
-3. 也可双击根目录 `打开局部改图插件.cmd`（会启动本机语音助手并加载插件）
+3. 也可双击根目录入口：Windows `打开局部改图插件.cmd`；macOS `打开局部改图插件.command`（启动本机助手并加载插件）
 
 ## 覆盖已经装进 Photoshop 的 External 插件
 
@@ -22,7 +22,7 @@
 
 `%APPDATA%\Adobe\UXP\Plugins\External\com.local.lk888.psedit`
 
-覆盖后该目录根上应能看到 `manifest.json`（当前版本 0.1.8），而不是多套一层 `plugin` 文件夹。
+覆盖后该目录根上应能看到 `manifest.json`（当前版本 0.1.19），而不是多套一层 `plugin` 文件夹。
 
 只覆盖 External 不够。拖放接图层在仓库里，不在 External 里。本机仓库若在 `D:\PS2025\ps-local-edit`，要同时更新：
 
@@ -42,10 +42,22 @@
 3. 从资源管理器把 PNG、JPG 或 WebP 拖到「拖入图片新增」或参考图那一行，看到蓝块后停一下再松开。参考图增加，不要弹出「局部改图 · 拖入图片」。
 4. 拖入失败时不要出现「该来源没有提供可读取的图片」或「语音会话已结束」。助手没开时，只提示可粘贴或点「添加图片」。
 
+## macOS
+
+1. 安装 Node.js 22+（若只用影词魔方 Mac 桌面包，可跳过）
+2. 双击仓库根目录 `打开局部改图插件.command`  
+   - 会同步插件到 `~/Library/Application Support/Adobe/UXP/Plugins/External/com.local.lk888.psedit`  
+   - 并启动本机助手 `127.0.0.1:17402`（剪贴板可用；听写与拖入接图层为一期降级）
+3. 打开 Photoshop → 增效工具 →「局部改图」
+4. 打包 CCX：`node scripts/package.mjs` → `dist/局部改图-LK888-VERSION.ccx`
+
+也可用影词魔方 `installer/macos/安装PS插件到UXP.command` 或桌面 dmg 自动部署 External 目录。
+
 ## 要求
 
 - Photoshop 25.0+（本机验证过 27.6）
-- Windows（语音/剪贴板助手依赖本机脚本）
+- Windows：完整语音/拖入接图层助手
+- macOS：插件面板 + 剪贴板助手可用；听写/接图层为降级（见上）
 - 不要提交或拷贝含 API Key 的 `.env` / 本机 secureStorage 导出
 
 ## 仓库

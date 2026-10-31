@@ -780,7 +780,7 @@ async function payloadsFromLocations(locations){
   }catch(error){
     if(payloads.length)return payloads;
     const message=String(error&&error.message||'');
-    if(/未开启|未连接|没有这个接口|拖入服务|助手/.test(message))throw new Error('本机图片拖入服务未开启。请双击“打开局部改图插件.cmd”后重试，或复制图片后按 Ctrl+V，也可点“添加图片”。');
+    if(/未开启|未连接|没有这个接口|拖入服务|助手/.test(message))throw new Error('本机图片拖入服务未开启。请运行「打开局部改图插件」后重试，或复制图片后粘贴，也可点「添加图片」。');
     return payloads;
   }
 }
