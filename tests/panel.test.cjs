@@ -5,9 +5,9 @@ const { test } = require('node:test');
 const api = require('../plugin/api');
 const {TaskQueue}=require('../plugin/task-queue');const {pngRGBA}=require('../plugin/png');
 
-function harness({ switchDocument = false, reopenSameDocument = false, reopenPathless = false, submissionFails = false, submissionMessage = '', helperDown = false, helperPrepareMissing = false, optimizerDeferred = false, noSelection = false, captureHangs = false, captureMismatch = false, captureError = '', boundsThrows = false, boundsError = '', busyTimeoutMs = 0, dropGraceMs = 0, entryForUrl = null, dropQueue = null, pickedFiles = null, pickerError = '' } = {}) {
+function harness({ switchDocument = false, reopenSameDocument = false, reopenPathless = false, submissionFails = false, submissionMessage = '', helperDown = false, helperPrepareMissing = false, optimizerDeferred = false, noSelection = false, captureHangs = false, captureMismatch = false, captureError = '', boundsThrows = false, boundsError = '', busyTimeoutMs = 0, dropGraceMs = 0, entryForUrl = null, dropQueue = null, pickedFiles = null, pickerError = '', remoteResult = false, remoteDownloadFails = false } = {}) {
   const nodes = {}, local = new Map(), calls = [], writes = [], requests = [], reads = [], docEvents = {}, helperCalls=[],optimizerCalls=[],captureArgs=[],filePickerCalls=[];let reloads=0, imageDecodes=0,optimizerCancels=0,resolveOptimize;
-  function makeNode(id='') { const node={id,value:id==='prompt'?'改成红色':id==='model'?'banana-2':'',textContent:'',hidden:false,style:{},children:[],attributes:{},className:'',classList:{add(){},remove(){}},addEventListener(event,fn){this[event]=fn;},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},append(...items){for(const item of items)this.appendChild(item);},appendChild(item){item.parentNode=this;this.children.push(item);},replaceChildren(...items){this.children=[];this.append(...items);},get parentElement(){return makeNode('parent');}};Object.defineProperty(node,'innerHTML',{get(){return '';},set(value){if(value==='')this.children=[];}});return node; }
+  function makeNode(id='') { const node={id,value:id==='prompt'?'改成红色':id==='model'?'banana-2':'',textContent:'',hidden:false,style:{},children:[],attributes:{},className:'',classList:{add(){},remove(){}},addEventListener(event,fn){this[event]=fn;},setAttribute(name,value){this.attributes[name]=value;},getAttribute(name){return Object.prototype.hasOwnProperty.call(this.attributes,name)?this.attributes[name]:null;},removeAttribute(name){delete this.attributes[name];if(name==='src')this.src='';},append(...items){for(const item of items)this.appendChild(item);},appendChild(item){item.parentNode=this;this.children.push(item);},replaceChildren(...items){this.children=[];this.append(...items);},get parentElement(){return makeNode('parent');}};Object.defineProperty(node,'innerHTML',{get(){return '';},set(value){if(value==='')this.children=[];}});return node; }
   const document = { readyState: 'interactive', addEventListener(event,fn) {docEvents[event]=fn;}, createElement: tag=>makeNode(tag), getElementById(id) { return nodes[id] ||= makeNode(id); },querySelectorAll(){return [];} };
   const selection = noSelection ? null : { bounds: {left:150,top:120,right:350,bottom:240} };
   if (boundsThrows && selection) Object.defineProperty(selection, 'bounds', { get() { throw new Error('dom bounds blocked'); } });
@@ -29,14 +29,15 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
     if(url.includes('127.0.0.1:17402/drop/arm')||url.includes('127.0.0.1:17402/drop/hide')){helperCalls.push({url,options});return {ok:true,json:async()=>({state:'ready'})};}
     if(url.includes('127.0.0.1:17402/drop/cover')||url.includes('127.0.0.1:17402/drop/open')){helperCalls.push({url,options});return {ok:true,json:async()=>({id:'test-drop',ready:true})};}
     if(url.includes('127.0.0.1:17402/drop/')){helperCalls.push({url,options});return {ok:true,json:async()=>({state:'ok'})};}
+    if (String(url).startsWith('https://cdn.example/')) { if (remoteDownloadFails) throw new Error('network down'); const bytes=Uint8Array.from([137,80,78,71,13,10,26,10]); return { ok:true, headers:{ get:name=>String(name).toLowerCase()==='content-type'?'image/png':'' }, arrayBuffer:async()=>bytes.buffer, blob:async()=>new Blob([bytes],{type:'image/png'}) }; }
     if (url.endsWith('/generate')) { requests.push(JSON.parse(options.body)); if (submissionMessage) return { ok:false, status:400, json:async()=>({error:{message:submissionMessage}}) }; if (submissionFails) throw new Error('connection lost'); return { ok: true, json: async () => ({ task_id: requests.length===1?'existing-task':'task-'+requests.length }) }; }
     if (switchDocument) app.activeDocument = { ...originalDoc, id: 99, path:'C:/project/other.psd' };
     if (reopenSameDocument) app.activeDocument = { ...originalDoc, id: 99 };
     if (reopenPathless) app.activeDocument = { ...originalDoc, id: 99, path:'C:/project/sample.psd' };
-    return { ok: true, json: async () => ({ is_final: true, state: 'success', result_url: 'data:image/png;base64,YWJj' }) };
+    return { ok: true, json: async () => ({ is_final: true, state: 'success', result_url: remoteResult ? 'https://cdn.example/result.png' : 'data:image/png;base64,YWJj' }) };
   };
   class Client extends api.MediaClient { constructor(key) { super(key, fetch); } }
-  const context = { __lk888BusyTimeoutMs: busyTimeoutMs || undefined, __lk888DropGraceMs: dropGraceMs || undefined, document, location:{reload:()=>{reloads++;}}, localStorage: { getItem: k => local.get(k) || null, setItem: (k, v) => local.set(k, v), removeItem: k => local.delete(k) }, setTimeout, clearTimeout, Uint8Array, console, fetch, require(name) {
+  const context = { __lk888BusyTimeoutMs: busyTimeoutMs || undefined, __lk888DropGraceMs: dropGraceMs || undefined, document, location:{reload:()=>{reloads++;}}, localStorage: { getItem: k => local.get(k) || null, setItem: (k, v) => local.set(k, v), removeItem: k => local.delete(k) }, setTimeout, clearTimeout, Uint8Array, Blob, URL, btoa, atob, console, fetch, require(name) {
     if (name === 'photoshop') return { app, imaging: { encodeImageData: async () => 'YWJj' }, constants: { DocumentMode: { RGB: 'RGB' } } };
     if (name === 'uxp') return { storage };
     if (name === './modules/ps') return ps;if(name==='./modules/geometry')return require('../plugin/modules/geometry');
@@ -640,8 +641,38 @@ test('result thumbnails keep their source and do not download the original until
  if(img.onerror)await img.onerror();
  assert.equal(h.imageDecodes,0);
  assert.match(img.src,/^data:image\/png/);
+ await button(h.nodes['task-content'],'放大预览').onclick();
+ assert.equal(h.nodes['task-preview'].style.display,'flex');
+ assert.match(h.nodes['task-preview-image'].src,/^data:image\/png/);
  await button(h.nodes['task-content'],'添加图层').onclick();await h.ready();
  assert.equal(h.imageDecodes,1);
+});
+test('remote candidate preview comes from the downloaded file, and zoom uses that same preview',async()=>{
+ const h=harness({remoteResult:true});await h.ready();await h.nodes.generate.click();await h.ready();
+ const img=findNode(h.nodes['task-content'],node=>node.id==='img');
+ const caption=findNode(h.nodes['task-content'],node=>node.className==='task-caption');
+ assert.ok(img.src,'preview src was not assigned');
+ assert.doesNotMatch(img.src,/^https:/);
+ assert.match(img.src,/^(blob:|data:image\/png)/);
+ if(/^blob:/.test(img.src)&&img.onerror){await img.onerror();assert.match(img.src,/^data:image\/png/);}
+ img.naturalWidth=32;img.naturalHeight=16;if(img.onload)await img.onload();
+ assert.equal(caption.textContent,'32 × 16');
+ await button(h.nodes['task-content'],'放大预览').onclick();
+ assert.equal(h.nodes['task-preview'].style.display,'flex');
+ assert.doesNotMatch(h.nodes['task-preview-image'].src,/^https:/);
+ assert.match(h.nodes['task-preview-image'].src,/^(blob:|data:image\/png)/);
+ h.nodes['task-preview-close'].click();
+ assert.equal(h.nodes['task-preview'].style.display,'none');
+ assert.equal(h.nodes['task-preview-image'].src,'');
+});
+test('a failed remote preview says add and save still work',async()=>{
+ const h=harness({remoteResult:true,remoteDownloadFails:true});await h.ready();await h.nodes.generate.click();await h.ready();
+ const caption=findNode(h.nodes['task-content'],node=>node.className==='task-caption');
+ assert.equal(caption.textContent,'预览加载失败，仍可点击添加图层或保存原图');
+ assert.ok(button(h.nodes['task-content'],'添加图层'));
+ assert.ok(button(h.nodes['task-content'],'保存原图'));
+ await button(h.nodes['task-content'],'放大预览').onclick();await h.ready();
+ assert.equal(h.nodes['task-preview-note'].textContent,'预览加载失败，仍可点击添加图层或保存原图');
 });
 test('uploaded references survive reopening a draft without a selection',async()=>{
  const h=harness({noSelection:true});await h.ready();await h.newDraft();
