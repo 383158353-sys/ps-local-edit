@@ -5,7 +5,7 @@ const { test } = require('node:test');
 const api = require('../plugin/api');
 const {TaskQueue}=require('../plugin/task-queue');const {pngRGBA}=require('../plugin/png');
 
-function harness({ switchDocument = false, reopenSameDocument = false, reopenPathless = false, submissionFails = false, submissionMessage = '', helperDown = false, helperPrepareMissing = false, optimizerDeferred = false, noSelection = false, captureHangs = false, captureMismatch = false, captureError = '', boundsThrows = false, boundsError = '', busyTimeoutMs = 0, dropGraceMs = 0, entryForUrl = null, dropQueue = null, pickedFiles = null, pickerError = '', remoteResult = false, remoteDownloadFails = false } = {}) {
+function harness({ switchDocument = false, reopenSameDocument = false, reopenPathless = false, submissionFails = false, submissionMessage = '', helperDown = false, helperPrepareMissing = false, optimizerDeferred = false, noSelection = false, captureHangs = false, captureMismatch = false, captureError = '', boundsThrows = false, boundsError = '', busyTimeoutMs = 0, dropGraceMs = 0, entryForUrl = null, dropQueue = null, pickedFiles = null, pickerError = '', remoteResult = false, remoteDownloadFails = false, remoteBytes = 0, tempFileUrl = false, blobThrows = false } = {}) {
   const nodes = {}, local = new Map(), calls = [], writes = [], requests = [], reads = [], docEvents = {}, helperCalls=[],optimizerCalls=[],captureArgs=[],filePickerCalls=[];let reloads=0, imageDecodes=0,optimizerCancels=0,resolveOptimize;
   function makeNode(id='') { const node={id,value:id==='prompt'?'改成红色':id==='model'?'banana-2':'',textContent:'',hidden:false,style:{},children:[],attributes:{},className:'',classList:{add(){},remove(){}},addEventListener(event,fn){this[event]=fn;},setAttribute(name,value){this.attributes[name]=value;},getAttribute(name){return Object.prototype.hasOwnProperty.call(this.attributes,name)?this.attributes[name]:null;},removeAttribute(name){delete this.attributes[name];if(name==='src')this.src='';},append(...items){for(const item of items)this.appendChild(item);},appendChild(item){item.parentNode=this;this.children.push(item);},replaceChildren(...items){this.children=[];this.append(...items);},get parentElement(){return makeNode('parent');}};Object.defineProperty(node,'innerHTML',{get(){return '';},set(value){if(value==='')this.children=[];}});return node; }
   const document = { readyState: 'interactive', addEventListener(event,fn) {docEvents[event]=fn;}, createElement: tag=>makeNode(tag), getElementById(id) { return nodes[id] ||= makeNode(id); },querySelectorAll(){return [];} };
@@ -18,7 +18,7 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
   const capture = { bounds, maskData: mask, documentWidth:1000,documentHeight:800,context: { documentId: 12, documentName: 'sample.psd', documentPath:reopenPathless?'':'C:/project/sample.psd', originalBounds: { left: 150, top: 120, right: 350, bottom: 240 } }, imageData: { sourceBounds: bounds, imageData: { width: 300, height: 200, components:4,getData:async()=>new Uint8Array(300*200*4), dispose() {} } } };
   const ps = { getSelectionBounds:async()=>{ if(boundsError) throw new Error(boundsError); return {left:150,top:120,right:350,bottom:240,width:200,height:120}; },hasActiveSelection:async()=>!noSelection,captureSelection: async (...args) => { captureArgs.push(args); if (captureError) throw new Error(captureError); if (captureHangs) return new Promise(() => {}); if (captureMismatch) return {...capture, imageData:{ sourceBounds:{ left:11.5, top:7.25, right:311.5, bottom:207.25 }, imageData:capture.imageData.imageData }}; return capture; }, placeBack: async (...args) => calls.push(args),placeGeneratedAsLayer:async (...args)=>calls.push(args) };
   const dataFiles=new Map();const folder={createFile:async name=>({write:async value=>dataFiles.set(name,value)}),getEntry:async name=>{reads.push(name);return {read:async()=>dataFiles.get(name)};}};
-  const storage = { formats: { binary: 'binary' }, secureStorage: { getItem: async () => new Uint8Array(Buffer.from('test-key')) }, localFileSystem: { getDataFolder:async()=>folder,getTemporaryFolder: async () => ({ createFile: async () => ({ write: async value => writes.push(value) }) }), createSessionToken: () => 'session-token', getFileForOpening: async options => { filePickerCalls.push(options); if (pickerError) throw new Error(pickerError); return pickedFiles; }, ...(entryForUrl?{getEntryWithUrl:entryForUrl}:{}) } };
+  const storage = { formats: { binary: 'binary' }, secureStorage: { getItem: async () => new Uint8Array(Buffer.from('test-key')) }, localFileSystem: { getDataFolder:async()=>folder,getTemporaryFolder: async () => ({ createFile: async name => ({ name, url: tempFileUrl ? 'plugin-temp:///' + encodeURIComponent(name || 'preview') : undefined, write: async value => writes.push(value) }) }), createSessionToken: () => 'session-token', getFileForOpening: async options => { filePickerCalls.push(options); if (pickerError) throw new Error(pickerError); return pickedFiles; }, ...(entryForUrl?{getEntryWithUrl:entryForUrl}:{}) } };
   const fetch = async (url, options) => {
     if(helperDown&&String(url).includes('127.0.0.1:17402'))throw new Error('fetch failed');
     if(helperPrepareMissing&&String(url).includes('127.0.0.1:17402/images/prepare'))return {ok:false,status:404,json:async()=>({message:'本机服务没有这个接口。'})};
@@ -29,7 +29,7 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
     if(url.includes('127.0.0.1:17402/drop/arm')||url.includes('127.0.0.1:17402/drop/hide')){helperCalls.push({url,options});return {ok:true,json:async()=>({state:'ready'})};}
     if(url.includes('127.0.0.1:17402/drop/cover')||url.includes('127.0.0.1:17402/drop/open')){helperCalls.push({url,options});return {ok:true,json:async()=>({id:'test-drop',ready:true})};}
     if(url.includes('127.0.0.1:17402/drop/')){helperCalls.push({url,options});return {ok:true,json:async()=>({state:'ok'})};}
-    if (String(url).startsWith('https://cdn.example/')) { if (remoteDownloadFails) throw new Error('network down'); const bytes=Uint8Array.from([137,80,78,71,13,10,26,10]); return { ok:true, headers:{ get:name=>String(name).toLowerCase()==='content-type'?'image/png':'' }, arrayBuffer:async()=>bytes.buffer, blob:async()=>new Blob([bytes],{type:'image/png'}) }; }
+    if (String(url).startsWith('https://cdn.example/')) { if (remoteDownloadFails) throw new Error('network down'); const bytes=remoteBytes>0?new Uint8Array(remoteBytes):Uint8Array.from([137,80,78,71,13,10,26,10]); if(bytes.length>=8){bytes[0]=137;bytes[1]=80;bytes[2]=78;bytes[3]=71;} return { ok:true, headers:{ get:name=>String(name).toLowerCase()==='content-type'?'image/png':'' }, arrayBuffer:async()=>bytes.buffer, blob:async()=>new Blob([bytes],{type:'image/png'}) }; }
     if (url.endsWith('/generate')) { requests.push(JSON.parse(options.body)); if (submissionMessage) return { ok:false, status:400, json:async()=>({error:{message:submissionMessage}}) }; if (submissionFails) throw new Error('connection lost'); return { ok: true, json: async () => ({ task_id: requests.length===1?'existing-task':'task-'+requests.length }) }; }
     if (switchDocument) app.activeDocument = { ...originalDoc, id: 99, path:'C:/project/other.psd' };
     if (reopenSameDocument) app.activeDocument = { ...originalDoc, id: 99 };
@@ -37,7 +37,9 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
     return { ok: true, json: async () => ({ is_final: true, state: 'success', result_url: remoteResult ? 'https://cdn.example/result.png' : 'data:image/png;base64,YWJj' }) };
   };
   class Client extends api.MediaClient { constructor(key) { super(key, fetch); } }
-  const context = { __lk888BusyTimeoutMs: busyTimeoutMs || undefined, __lk888DropGraceMs: dropGraceMs || undefined, document, location:{reload:()=>{reloads++;}}, localStorage: { getItem: k => local.get(k) || null, setItem: (k, v) => local.set(k, v), removeItem: k => local.delete(k) }, setTimeout, clearTimeout, Uint8Array, Blob, URL, btoa, atob, console, fetch, require(name) {
+  const previewBlob=blobThrows?function Blob(){throw new Error('UXP Blob is unavailable');}:Blob;
+  const previewURL=blobThrows?{createObjectURL(){throw new Error('UXP createObjectURL is unavailable');},revokeObjectURL(){throw new Error('UXP revokeObjectURL is unavailable');}}:URL;
+  const context = { __lk888BusyTimeoutMs: busyTimeoutMs || undefined, __lk888DropGraceMs: dropGraceMs || undefined, document, location:{reload:()=>{reloads++;}}, localStorage: { getItem: k => local.get(k) || null, setItem: (k, v) => local.set(k, v), removeItem: k => local.delete(k) }, setTimeout, clearTimeout, Uint8Array, Blob:previewBlob, URL:previewURL, btoa, atob, console, fetch, require(name) {
     if (name === 'photoshop') return { app, imaging: { encodeImageData: async () => 'YWJj' }, constants: { DocumentMode: { RGB: 'RGB' } } };
     if (name === 'uxp') return { storage };
     if (name === './modules/ps') return ps;if(name==='./modules/geometry')return require('../plugin/modules/geometry');
@@ -653,17 +655,41 @@ test('remote candidate preview comes from the downloaded file, and zoom uses tha
  const caption=findNode(h.nodes['task-content'],node=>node.className==='task-caption');
  assert.ok(img.src,'preview src was not assigned');
  assert.doesNotMatch(img.src,/^https:/);
- assert.match(img.src,/^(blob:|data:image\/png)/);
+ assert.match(img.src,/^(blob:|data:image\/png|plugin-temp:)/);
  if(/^blob:/.test(img.src)&&img.onerror){await img.onerror();assert.match(img.src,/^data:image\/png/);}
  img.naturalWidth=32;img.naturalHeight=16;if(img.onload)await img.onload();
  assert.equal(caption.textContent,'32 × 16');
  await button(h.nodes['task-content'],'放大预览').onclick();
  assert.equal(h.nodes['task-preview'].style.display,'flex');
  assert.doesNotMatch(h.nodes['task-preview-image'].src,/^https:/);
- assert.match(h.nodes['task-preview-image'].src,/^(blob:|data:image\/png)/);
+ assert.match(h.nodes['task-preview-image'].src,/^(blob:|data:image\/png|plugin-temp:)/);
  h.nodes['task-preview-close'].click();
  assert.equal(h.nodes['task-preview'].style.display,'none');
  assert.equal(h.nodes['task-preview-image'].src,'');
+});
+test('a large result uses the temp file url and selection still reads when blob URLs throw',async()=>{
+ const h=harness({remoteResult:true,remoteBytes:300*1024,tempFileUrl:true,blobThrows:true});
+ await h.ready();await h.nodes.generate.click();await h.ready();
+ const img=findNode(h.nodes['task-content'],node=>node.id==='img');
+ assert.match(img.src,/^plugin-temp:/);
+ assert.doesNotMatch(img.src,/^https:/);
+ assert.doesNotMatch(img.src,/^data:/);
+ await h.nodes['capture-selection'].click();
+ assert.match(h.nodes.status.textContent,/已读取选区/);
+ assert.equal(h.nodes.generate.disabled,false);
+});
+test('preview failure leaves the remote caption and does not block selection',async()=>{
+ const h=harness({remoteResult:true,remoteBytes:300*1024,blobThrows:true});
+ await h.ready();await h.nodes.generate.click();await h.ready();
+ const img=findNode(h.nodes['task-content'],node=>node.id==='img');
+ const caption=findNode(h.nodes['task-content'],node=>node.className==='task-caption');
+ assert.equal(caption.textContent,'预览加载失败，仍可点击添加图层或保存原图');
+ assert.match(img.src,/^https:\/\/cdn\.example\//);
+ assert.ok(button(h.nodes['task-content'],'添加图层'));
+ assert.ok(button(h.nodes['task-content'],'保存原图'));
+ await h.nodes['capture-selection'].click();
+ assert.match(h.nodes.status.textContent,/已读取选区/);
+ assert.equal(h.nodes.generate.disabled,false);
 });
 test('a failed remote preview says add and save still work',async()=>{
  const h=harness({remoteResult:true,remoteDownloadFails:true});await h.ready();await h.nodes.generate.click();await h.ready();
