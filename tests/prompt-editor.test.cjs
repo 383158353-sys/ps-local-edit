@@ -44,6 +44,16 @@ test('paste image action reads screenshot and never inserts clipboard text',asyn
   assert.deepEqual(h.images,['data:image/png;base64,YWJj']);
   assert.equal(h.input.value,'红色花瓶');
 });
+test('wheel over the prompt stays on the prompt until the text cannot move farther',()=>{
+  const h=fixture();
+  h.input.scrollTop=20;h.input.scrollHeight=400;h.input.clientHeight=100;
+  let stopped=false;
+  const wheel=delta=>{stopped=false;h.input.events.wheel({deltaY:delta,stopPropagation(){stopped=true;},preventDefault(){}});};
+  wheel(30);assert.equal(stopped,true);
+  h.input.scrollTop=300;wheel(40);assert.equal(stopped,false);
+  h.input.scrollTop=0;wheel(-20);assert.equal(stopped,false);
+  h.input.scrollHeight=80;h.input.clientHeight=100;h.input.scrollTop=0;wheel(20);assert.equal(stopped,false);
+});
 test('prompt height follows its content and stops growing after the limit',()=>{
   const h=fixture();h.input.style={};
   Object.defineProperty(h.input,'scrollHeight',{get(){return this.value.length>500?600:this.value.length>50?148:56;}});

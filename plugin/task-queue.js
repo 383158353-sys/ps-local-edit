@@ -1,4 +1,5 @@
 const {imageSources,unwrap,providerError}=require('./api');
+const {fitUploadImages}=require('./image-budget');
 class TaskQueue{
  constructor({jobs=[],persist,client,onChange}){this.jobs=jobs;this.persist=persist;this.client=client;this.onChange=onChange;this.querying=new Set();}
  save(){this.persist(this.jobs);this.onChange();}
@@ -6,21 +7,54 @@ class TaskQueue{
   const index=this.jobs.findIndex(j=>j.id===record.id);if(index>=0)this.jobs[index]=record;else this.jobs.unshift(record);
   record.phase='准备图片';record.timings={startedAt:Date.now()};this.save();
   const api=await this.client();
-  if(images.length&&api.prepareImages){try{images=await api.prepareImages(images);}catch(error){record.prepareNote=error&&error.prepareSkipped?error.message:'本机助手未开启，已改用原图直接提交。';}}
+  let note='';
+  if(images.length&&api.prepareImages){
+   try{
+    const prepared=await api.prepareImages(images);
+    if(Array.isArray(prepared)&&prepared.length===images.length){images=prepared.slice();if(prepared.prepareNote)note=prepared.prepareNote;}
+   }catch(error){
+    const message=String(error&&error.message||'');
+    if(!/无法识别的图片/.test(message))note=error&&error.prepareSkipped?message:'本机助手未开启，已改用原图直接提交。';
+   }
+  }
+  if(images.length){
+   const fitted=fitUploadImages(images,{targetBytes:api&&api.uploadByteBudget});
+   images=fitted.images;
+   if(fitted.note)note=fitted.note;
+   else if(!note)note='图片使用原图提交。';
+  }
+  if(note)record.prepareNote=note;
   record.timings.preparedAt=Date.now();record.phase='上传图片，等待平台接单';
   record.pendingSubmissions=record.count;record.state='submitting';this.save();
-  // Each requested output is submitted once. Independent requests need not wait
-  // for the preceding model task to be accepted or completed.
+  // LK888's documented image params have no seed. A retest with distinct
+  // params.seed still returned the same picture from distinct task ids, so
+  // seed is not sent. Extra slots change the prompt, which is the field the
+  // model is documented to read. Midjourney also gets its chaos control.
   const failures=[];
   await Promise.all(Array.from({length:record.count},async(_,index)=>{
-   try{const id=await api.submit(record.model,record.instruction,images,params);record.tasks.push({id,state:'running',results:[],outputIndex:index});}
-   catch(e){failures.push(e);record.error=e.message;}
+   const slotParams=variationParams(params,record.model,index,record.count);
+   try{
+    const submitted=await api.submit(record.model,variationPrompt(record.instruction,index,record.count),images,slotParams);
+    if(submitted&&typeof submitted==='object'){
+     if(submitted.note)record.prepareNote=submitted.note;
+     if(Array.isArray(submitted.images)&&submitted.images.length){
+      const id=submitted.taskId?String(submitted.taskId):'local-sync-'+record.id+'-'+index;
+      record.tasks.push({id,state:'ready',results:submitted.images.map(source=>({source,imported:false})),outputIndex:index,immediate:!submitted.taskId});
+     }else record.tasks.push({id:String(submitted.taskId),state:'running',results:[],outputIndex:index});
+    }else record.tasks.push({id:String(submitted),state:'running',results:[],outputIndex:index});
+    record.chargeState='accepted';
+   }
+   catch(e){failures.push(e);record.error=e.message;if(e&&e.uncertain)record.chargeState='uncertain';else record.chargeState='rejected';}
    finally{record.pendingSubmissions--;record.phase='已接单 '+record.tasks.length+'/'+record.count+'，待响应 '+record.pendingSubmissions;this.save();}
   }));
   record.tasks.sort((a,b)=>a.outputIndex-b.outputIndex);
   record.timings.acceptedAt=Date.now();
-  if(failures.length){record.error=[...new Set(failures.map(e=>e&&e.message).filter(Boolean))].join('；')||'生成提交失败。';record.state=record.tasks.some(t=>t.state==='running')?'running':'failed';record.phase=record.state==='running'?'部分已接单，其余提交失败':'提交失败';}
-  else{record.phase='平台生成中';record.state=record.tasks.every(t=>t.state==='ready')?'ready':record.tasks.some(t=>t.state==='running')?'running':'failed';}
+  if(failures.length){record.error=[...new Set(failures.map(e=>e&&e.message).filter(Boolean))].join('；')||'生成提交失败。';const uncertain=failures.some(e=>e&&e.uncertain)&&!record.tasks.some(t=>t.state==='running');record.chargeState=uncertain?'uncertain':(record.tasks.length?'accepted':'rejected');record.state=record.tasks.some(t=>t.state==='running')?'running':uncertain?'uncertain':'failed';record.phase=record.state==='running'?'部分已接单，其余提交失败':uncertain?'提交状态不确定，请到平台确认，勿重复生成':'提交失败';}
+  else{record.chargeState='accepted';record.phase='平台生成中';record.state=record.tasks.every(t=>t.state==='ready')?'ready':record.tasks.some(t=>t.state==='running')?'running':'failed';}
+  if(record.count>1){
+   const line='多张分别提交，并已要求每一张给出不同候选。';
+   if(!String(record.prepareNote||'').includes(line))record.prepareNote=record.prepareNote?record.prepareNote+' '+line:line;
+  }
   this.save();
  }
  async tick(){await Promise.all(this.jobs.flatMap(job=>job.tasks.filter(task=>task.state==='running').map(task=>this.query(job,task))));}
@@ -38,4 +72,15 @@ class TaskQueue{
   if(job.state!=='uncertain'&&!job.pendingSubmissions)job.state=job.tasks.every(t=>t.state==='ready')?'ready':job.tasks.some(t=>t.state==='running')?'running':'failed';
  }catch(e){task.error=e.message;if(e.terminal){task.state='failed';task.results=[];if(job.state!=='uncertain')job.state=job.tasks.some(t=>t.state==='running')?'running':'failed';}}finally{this.querying.delete(task.id);this.save();}}
 }
-module.exports={TaskQueue};
+function variationPrompt(instruction,index,count){
+  const text=String(instruction||'');
+  if(!(count>1))return text;
+  return text+'\n\n这一张是第'+(index+1)+'张候选：保持上面的修改要求，但光影、景深或次要细节要和其他候选不同。不要在画面里写编号或说明。';
+}
+function variationParams(params,model,index,count){
+  const next={...(params||{})};
+  if(!(count>1)||!/mj|midjourney|niji/i.test(String(model||'')))return next;
+  next.chaos=[40,70,100][Math.min(index,2)];
+  return next;
+}
+module.exports={TaskQueue,variationPrompt,variationParams};

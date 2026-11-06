@@ -2,6 +2,7 @@
  * Protocol reference: Corkery520/ComfyUI-MengBaoAI/api/image_client.py.
  * No API keys, prompts or image payloads are logged.
  */
+const {fitUploadImages,isExplicitSizeRejection,parseSizeLimits,tightenLimits}=require('./image-budget');
 const MODELS = [
   { id: 'banana-2', label: 'Nano Banana 2' },
   { id: 'gemini-nano-banana-2.1', label: 'Banana 2.1' },
@@ -14,6 +15,86 @@ const MODELS = [
   { id: 'custom', label: '其他模型（自定义 ID）' }
 ];
 function unwrap(value) { return value && value.data && typeof value.data === 'object' && !Array.isArray(value.data) ? value.data : value; }
+function asTaskId(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(Math.trunc(value));
+  if (typeof value !== 'string') return '';
+  const text = value.trim();
+  if (!text || text.length > 200 || /^(https?:|data:)/i.test(text)) return '';
+  if (/^(null|undefined|none|success|ok|true|false)$/i.test(text)) return '';
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(text)) return '';
+  return text;
+}
+function taskIdOn(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+  for (const key of Object.keys(value)) {
+    if (key.toLowerCase().replace(/[_-]/g, '') !== 'taskid') continue;
+    const id = asTaskId(value[key]);
+    if (id) return id;
+  }
+  const task = value.task;
+  if (task && typeof task === 'object' && !Array.isArray(task)) {
+    const id = asTaskId(task.id ?? task.task_id ?? task.taskId);
+    if (id) return id;
+  }
+  return '';
+}
+// LK888 create responses are not one shape: task_id, taskId, data.task.id,
+// or a synchronous data[].url with no task id at all.
+function submissionTaskId(payload) {
+  const seen = new Set();
+  function walk(value, depth) {
+    if (depth > 8 || value == null) return '';
+    if (typeof value === 'string') {
+      const text = value.trim();
+      if (/^[\[{]/.test(text)) { try { return walk(JSON.parse(text), depth + 1); } catch (_) { return ''; } }
+      return '';
+    }
+    if (typeof value !== 'object') return '';
+    if (seen.has(value)) return '';
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = walk(item, depth + 1);
+        if (found) return found;
+      }
+      return '';
+    }
+    const direct = taskIdOn(value);
+    if (direct) return direct;
+    const looksLikeTask = ['state', 'status', 'is_final', 'isFinal'].some(key => value[key] != null && value[key] !== '');
+    if (looksLikeTask && value.url == null && value.b64_json == null) {
+      const id = asTaskId(value.id);
+      if (id) return id;
+    }
+    for (const key of Object.keys(value)) {
+      if (['prompt', 'input', 'images', 'metadata', 'usage', 'error', 'message', 'msg'].includes(key)) continue;
+      const child = value[key];
+      if (typeof child === 'string' && /^[\[{]/.test(child.trim())) {
+        const found = walk(child, depth + 1);
+        if (found) return found;
+      }
+      if (child && typeof child === 'object') {
+        const found = walk(child, depth + 1);
+        if (found) return found;
+      } else if ((key === 'data' || key.toLowerCase().replace(/[_-]/g, '') === 'taskid') && (typeof child === 'string' || typeof child === 'number')) {
+        const id = asTaskId(child);
+        if (id && /\d/.test(String(child))) return id;
+      }
+    }
+    return '';
+  }
+  return walk(payload, 0);
+}
+function submissionFailure(payload) {
+  const code = payload?.code ?? unwrap(payload)?.code;
+  if (code == null || code === '') return null;
+  const ok = code === 0 || code === 1 || code === 200 || code === '0' || code === '1' || code === '200' || /^(success|ok|成功)$/i.test(String(code));
+  if (ok) return null;
+  const msg = [payload?.msg, payload?.message, unwrap(payload)?.msg, unwrap(payload)?.message].find(value => typeof value === 'string' && value.trim());
+  const error = new Error(msg ? msg.trim().slice(0, 300) : ('平台未创建任务（code ' + code + '）。请先到平台确认，避免重复计费。'));
+  error.terminal = true;
+  return error;
+}
 function providerError(payload, status) {
   const error=payload?.error;
   const detail=typeof error==='string'?error:[error?.message,error?.msg,error?.detail,error?.type,error?.code,payload?.message,payload?.msg,payload?.detail,payload?.code].find(value=>typeof value==='string'&&value.trim());
@@ -76,6 +157,9 @@ class MediaClient {
         payload = unwrap(payload)?.error ? unwrap(payload) : payload;
         const error = payload.error;
         const failure=new Error(providerError(payload,response.status));
+        const acceptedId=submissionTaskId(payload);
+        if (acceptedId) { failure.taskId=acceptedId; }
+        else if (isExplicitSizeRejection(failure.message)) { failure.sizeRejected=true; failure.terminal=true; failure.uncertain=false; failure.limits=parseSizeLimits(failure.message); }
         if (localSubmission && /语音会话已结束|未知语音请求|本机服务没有这个接口/.test(failure.message)) {
           const missed=new Error('本机助手还没有生图接口。');
           missed.localRouteMissing=true;
@@ -90,15 +174,18 @@ class MediaClient {
     } catch (error) {
       if (error.localRouteMissing) throw error;
       const phase = path.startsWith('/v1/media/generate') ? '提交生图任务' : path.startsWith('/v1/media/status') ? '查询原任务' : '检查连接';
+      if (error.sizeRejected || error.localRouteMissing) throw error;
       if (/network|fetch|abort|timeout/i.test(error.message || '') || error.name === 'AbortError') {
         const failure=new Error(phase + '时网络连接失败或超时。' + (body ? '请到平台确认是否已接单，勿重复生成。' : '可再次查询，不会重复提交生图任务。'));
         failure.terminal=!!body;
+        failure.uncertain=!!body;
+        failure.sizeRejected=false;
         throw failure;
       }
       throw error;
     } finally { clearTimeout(timer); }
   }
-  async submit(model, prompt, images, params = {}) {
+  async submit(model, prompt, images, params = {}, attempt = 0) {
     if(model==='gemini-nano-banana-2.1'){
       const available=await this.models();
       const exact=available.find(item=>item.id===model);
@@ -107,10 +194,39 @@ class MediaClient {
       else if(alternatives.length===1)model=alternatives[0].id;
       else {const error=new Error('当前平台未返回可唯一确认的 Banana 2.1 模型 ID；尚未提交生图任务。请在设置中刷新平台模型。');error.terminal=true;throw error;}
     }
-    const payload = await this.request('/v1/media/generate', { model, prompt, params: { ...params, images } });
-    const taskId = unwrap(payload).task_id || payload.task_id;
-    if (!taskId) throw new Error('未收到任务编号。请先到平台确认任务，避免重复计费。');
-    return String(taskId);
+    let payload;
+    try { payload = await this.request('/v1/media/generate', { model, prompt, params: { ...params, images } }); }
+    catch (error) {
+      if (error.taskId) return String(error.taskId);
+      if (attempt < 1 && error.sizeRejected && !error.uncertain) {
+        const fitted = fitUploadImages(images, { limits: tightenLimits(error.limits || parseSizeLimits(error.message)) });
+        if (fitted.compressed && fitted.images.some((image, index) => image !== images[index])) {
+          const again = await this.submit(model, prompt, fitted.images, params, attempt + 1);
+          if (again && typeof again === 'object') { again.note = fitted.note; return again; }
+          return { taskId: String(again), note: fitted.note };
+        }
+      }
+      throw error;
+    }
+    const taskId = submissionTaskId(payload);
+    const echoed = new Set((Array.isArray(images) ? images : []).filter(item => typeof item === 'string'));
+    const readyImages = imageSources(payload).filter(source => !echoed.has(source));
+    if (taskId && readyImages.length) return { taskId: String(taskId), images: readyImages };
+    if (taskId) return String(taskId);
+    if (readyImages.length) return { images: readyImages };
+    const failure = submissionFailure(payload);
+    if (failure) {
+      if (!taskId && isExplicitSizeRejection(failure.message)) { failure.sizeRejected=true; failure.terminal=true; failure.uncertain=false; failure.limits=parseSizeLimits(failure.message); }
+      if (attempt < 1 && failure.sizeRejected) {
+        const fitted = fitUploadImages(images, { limits: tightenLimits(failure.limits) });
+        if (fitted.compressed && fitted.images.some((image, index) => image !== images[index])) return this.submit(model, prompt, fitted.images, params, attempt + 1);
+      }
+      throw failure;
+    }
+    const missing=new Error('未收到任务编号。请先到平台确认任务，避免重复计费。');
+    missing.uncertain=true;
+    missing.terminal=true;
+    throw missing;
   }
   async status(taskId) { return this.request('/v1/media/status?task_id=' + encodeURIComponent(taskId)); }
   async balance() { return this.request('/api/v1/skills/balance'); }
@@ -121,4 +237,4 @@ class MediaClient {
     return items.map(item => typeof item === 'string' ? {id:item,label:item} : {id:item.id || item.name,label:item.name || item.id}).filter(item => typeof item.id === 'string' && item.id.trim());
   }
 }
-module.exports = { MODELS, MediaClient, imageSources, unwrap, providerError };
+module.exports = { MODELS, MediaClient, imageSources, unwrap, providerError, submissionTaskId };

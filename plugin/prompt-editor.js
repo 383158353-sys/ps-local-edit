@@ -24,6 +24,9 @@ class PromptEditor {
     });
     node.addEventListener('keyup',event=>event.stopPropagation());
     node.addEventListener('paste',event=>this.handlePaste(event));
+    // Wheel over the prompt moves the prompt. At its ends, or when the text
+    // already fits, the event continues to the panel scroller.
+    node.addEventListener('wheel',event=>this.onWheel(event),true);
     voiceButton.addEventListener('mousedown',event=>event.preventDefault());
     voiceButton.addEventListener('click',()=>{if(!this.busy)this.onVoice(['starting','listening','stopping'].includes(this.voiceState)?'stop':'start');});
     if(expandButton){
@@ -42,6 +45,16 @@ class PromptEditor {
     if(expanded)this.node.focus();
   }
   changed(){this.resize();this.onChange(this.node.value);}
+  onWheel(event){
+    const delta=Number(event.deltaY);
+    if(!delta)return;
+    const node=this.node;
+    const max=Math.max(0,(Number(node.scrollHeight)||0)-(Number(node.clientHeight)||0));
+    if(max<=1)return;
+    const top=Number(node.scrollTop)||0;
+    if((delta<0&&top<=0)||(delta>0&&top>=max-1))return;
+    if(typeof event.stopPropagation==='function')event.stopPropagation();
+  }
   resize(){
     if(!this.node.style)return;
     this.node.style.height='56px';

@@ -153,7 +153,7 @@ function refresh() {
   show('pause-wait',false);
   $('model').disabled = busy || optimizing; if(promptEditor)promptEditor.setBusy(busy || optimizing);else $('prompt').readOnly=busy || optimizing;
   if($('optimize-prompt')){$('optimize-prompt').textContent=optimizing?'停止优化':'✨ 优化';$('optimize-prompt').disabled=busy;}
-  $('add-reference').disabled = busy; $('clear-reference').disabled = busy;
+  $('add-reference').disabled = false; if($('paste-reference'))$('paste-reference').disabled = false; $('clear-reference').disabled = busy;
   show('recovery',false);
   $('resume').disabled = busy || !job || !job.taskId;
   show('resume', !!(job && job.taskId));
@@ -167,7 +167,7 @@ async function key() {
   try { const value = await storage.secureStorage.getItem('lk888-key'); return String.fromCharCode(...value); }
   catch (_) { throw new Error('请在设置中填写并保存 API Key。'); }
 }
-async function client() { const api=new MediaClient(await key());api.prepareImages=async images=>{try{const result=await voice.request('/images/prepare','POST',{images});if(!Array.isArray(result.images)||result.images.length!==images.length){const invalid=new Error('图片预处理返回无效，已改用原图直接提交。');invalid.prepareSkipped=true;throw invalid;}return result.images;}catch(error){if(error&&error.prepareSkipped)throw error;const skipped=new Error('本机助手未开启，已改用原图直接提交。');skipped.prepareSkipped=true;throw skipped;}};return api; }
+async function client() { const api=new MediaClient(await key());api.prepareImages=async images=>{try{const result=await voice.request('/images/prepare','POST',{images});if(!Array.isArray(result.images)||result.images.length!==images.length){const invalid=new Error('图片预处理返回无效，已改用原图直接提交。');invalid.prepareSkipped=true;throw invalid;}if(result.note)result.images.prepareNote=result.note;return result.images;}catch(error){if(error&&error.prepareSkipped)throw error;const skipped=new Error('本机助手未开启，已改用原图直接提交。');skipped.prepareSkipped=true;throw skipped;}};return api; }
 async function withBusy(fn) {
   if (busy) { status('正在处理…', true); return; }
   const epoch = ++busyEpoch;
@@ -223,6 +223,148 @@ function download(source) {
   },()=>resultDownloads.delete(source));
   return pending;
 }
+const PREVIEW_FAIL='预览加载失败，仍可点击添加图层或保存原图';
+const PREVIEW_BLOB_CAP=256*1024;
+const previewObjectUrls=new Map();
+let previewSerial=0,previewBlobBlocked=false;
+function previewMime(ext){return ext==='jpg'||ext==='jpeg'?'image/jpeg':ext==='webp'?'image/webp':'image/png';}
+function previewView(buffer){
+  if(!buffer||!buffer.byteLength)return new Uint8Array(0);
+  try{if(ArrayBuffer.isView(buffer))return new Uint8Array(buffer.buffer,buffer.byteOffset,buffer.byteLength);}catch(_){}
+  try{return new Uint8Array(buffer);}catch(_){return new Uint8Array(0);}
+}
+function previewFileName(source,ext){
+  let hash=0;const text=String(source||'');
+  for(let i=0;i<text.length;i++)hash=(hash*33+text.charCodeAt(i))>>>0;
+  return 'lk-preview-'+hash.toString(16)+'.'+(ext==='jpg'||ext==='webp'?ext:'png');
+}
+function smallDataUrl(buffer,ext){
+  if(!buffer||!buffer.byteLength||buffer.byteLength>PREVIEW_BLOB_CAP||typeof btoa!=='function'||!fileUtils||typeof fileUtils.arrayBufferToBase64!=='function')return '';
+  const bytes=previewView(buffer);
+  if(!bytes.byteLength)return '';
+  try{
+    const encoded=fileUtils.arrayBufferToBase64(bytes);
+    return encoded?'data:'+previewMime(ext)+';base64,'+encoded:'';
+  }catch(_){return '';}
+}
+function smallBlobUrl(buffer,ext){
+  if(previewBlobBlocked||!buffer||!buffer.byteLength||buffer.byteLength>PREVIEW_BLOB_CAP)return null;
+  const bytes=previewView(buffer);
+  if(!bytes.byteLength)return null;
+  try{
+    if(typeof Blob!=='function'||typeof URL==='undefined'||typeof URL.createObjectURL!=='function'){previewBlobBlocked=true;return null;}
+    const blob=new Blob([bytes],{type:previewMime(ext)});
+    const url=URL.createObjectURL(blob);
+    if(typeof url!=='string'||!url)return null;
+    return {url,revoke:true,bytes,ext,blob};
+  }catch(_){previewBlobBlocked=true;return null;}
+}
+async function filePreviewUrl(buffer,ext,source){
+  try{
+    if(!fs||typeof fs.getTemporaryFolder!=='function'||!buffer||!buffer.byteLength)return '';
+    const folder=await fs.getTemporaryFolder();
+    const file=await folder.createFile(previewFileName(source,ext),{overwrite:true});
+    await file.write(buffer,{format:storage&&storage.formats?storage.formats.binary:undefined});
+    return file&&typeof file.url==='string'?file.url:'';
+  }catch(_){return '';}
+}
+async function buildLocalPreview(buffer,ext,source){
+  const fileUrl=await filePreviewUrl(buffer,ext,source);
+  if(fileUrl)return {url:fileUrl,revoke:false,bytes:null,ext};
+  const blob=smallBlobUrl(buffer,ext);
+  if(blob)return blob;
+  const data=smallDataUrl(buffer,ext);
+  return data?{url:data,revoke:false,bytes:null,ext}:null;
+}
+function rememberPreview(source,entry){
+  const current=previewObjectUrls.get(source);
+  if(current){
+    if(entry&&entry.revoke&&entry.url!==current.url){try{URL.revokeObjectURL(entry.url);}catch(_){}}
+    return current;
+  }
+  previewObjectUrls.set(source,entry);
+  return entry;
+}
+function releasePreviewUrls(keep){
+  try{
+    for(const source of [...previewObjectUrls.keys()]){
+      if(keep.has(source))continue;
+      const entry=previewObjectUrls.get(source);
+      previewObjectUrls.delete(source);
+      if(entry&&entry.revoke){try{URL.revokeObjectURL(entry.url);}catch(_){}}
+    }
+  }catch(_){}
+}
+function listedResultSources(){
+  try{
+    const record=queue?.jobs.find(job=>job.id===selectedJobId),sources=[];
+    (record?.tasks||[]).forEach(task=>(task.results||[]).forEach(result=>{if(result&&result.source)sources.push(result.source);}));
+    return sources;
+  }catch(_){return [];}
+}
+function shownPreviewSources(extra){
+  const keep=new Set((extra||[]).filter(Boolean));
+  try{
+    const overlay=$('task-preview');
+    if(overlay&&overlay.style.display==='flex'){
+      const image=$('task-preview-image');
+      const source=image&&typeof image.getAttribute==='function'?image.getAttribute('data-source')||'':'';
+      if(source)keep.add(source);
+    }
+  }catch(_){}
+  return keep;
+}
+function previewStillCurrent(img,serial){return !!(img&&img._previewSerial===serial&&img.isConnected!==false);}
+function setPreviewCaption(caption,text,title){try{if(!caption)return;caption.textContent=text||'';if(title)caption.title=title;}catch(_){}}
+function assignPreviewSrc(img,url){try{img.src=url;return true;}catch(_){return false;}}
+function failPreview(img,caption,source){
+  setPreviewCaption(caption,PREVIEW_FAIL,PREVIEW_FAIL);
+  if(img&&img._previewMode!=='remote'&&/^https?:\/\//i.test(source||'')){img._previewMode='remote';assignPreviewSrc(img,source);}
+}
+function bindCandidatePreview(img,caption,source,hint){
+  try{
+    const serial=++previewSerial;
+    img._previewSerial=serial;
+    img._previewEntry=null;
+    img.onload=()=>{try{if(!previewStillCurrent(img,serial))return;if(img.naturalWidth)setPreviewCaption(caption,img.naturalWidth+' × '+img.naturalHeight,hint);}catch(_){}};
+    img.onerror=()=>{
+      try{
+        if(!previewStillCurrent(img,serial))return;
+        const entry=img._previewEntry;
+        if(img._previewMode==='blob'&&entry&&entry.bytes){
+          const data=smallDataUrl(entry.bytes,entry.ext);
+          if(data){img._previewMode='data';assignPreviewSrc(img,data);return;}
+        }
+        failPreview(img,caption,source);
+      }catch(_){try{failPreview(img,caption,source);}catch(__){}}
+    };
+    if(!source){failPreview(img,caption,'');return;}
+    if(String(source).startsWith('data:image/')){img._previewMode='data';assignPreviewSrc(img,source);return;}
+    const cached=previewObjectUrls.get(source);
+    if(cached&&cached.url){img._previewMode=cached.revoke?'blob':'file';img._previewEntry=cached;assignPreviewSrc(img,cached.url);return;}
+    setPreviewCaption(caption,'正在加载预览…',hint);
+    Promise.resolve().then(()=>download(source)).then(({buffer,ext})=>buildLocalPreview(buffer,ext,source).then(entry=>{
+      if(!previewStillCurrent(img,serial)){
+        if(entry&&entry.revoke){try{URL.revokeObjectURL(entry.url);}catch(_){}}
+        return;
+      }
+      if(!entry||!entry.url)throw new Error('no local preview');
+      const stored=rememberPreview(source,entry);
+      img._previewMode=stored.revoke?'blob':'file';
+      img._previewEntry=stored;
+      if(!assignPreviewSrc(img,stored.url))failPreview(img,caption,source);
+    })).catch(()=>{if(previewStillCurrent(img,serial))failPreview(img,caption,source);});
+  }catch(_){try{failPreview(img,caption,source);}catch(__){}}
+}
+function closeTaskPreview(){
+  try{
+    const image=$('task-preview-image');
+    if(image){image._previewSerial=++previewSerial;image.removeAttribute('src');image.removeAttribute('data-source');}
+    const note=$('task-preview-note');if(note)note.textContent='';
+    const overlay=$('task-preview');if(overlay)overlay.style.display='none';
+    releasePreviewUrls(shownPreviewSources(listedResultSources()));
+  }catch(_){}
+}
 async function importImage() {
   if (!capture || !job || !job.source) throw new Error('本次选区不可恢复。请保存结果后手动导入 PS。');
   if (job.imported) throw new Error('此结果已导入。结束任务记录后可再次生成。');
@@ -240,7 +382,8 @@ async function importImage() {
   // Permit a new run after a successful import, keep the result available until then.
   $('generate').disabled = false;
 }
-function renderTasks(){
+function renderTasks(){try{renderTaskCards();}catch(_){}}
+function renderTaskCards(){
  const root=$('task-content');root.innerHTML='';
  if(historyOpen){
   const list=document.createElement('div');list.className='task-history';
@@ -258,21 +401,32 @@ function renderTasks(){
   if(!queue.jobs.length){const empty=document.createElement('p');empty.className='task-message';empty.textContent='暂无历史记录。';list.appendChild(empty);}
   root.appendChild(list);
  }
- const record=queue.jobs.find(j=>j.id===selectedJobId);if(!record)return;
+ const record=queue.jobs.find(j=>j.id===selectedJobId);if(!record){releasePreviewUrls(shownPreviewSources([]));return;}
  const notice=(message,error=false)=>{const text=scrubVoiceCopy(message);if(!text)return;const p=document.createElement('p');p.className='task-message'+(error?' task-error':'');p.textContent=text;root.appendChild(p);};
  if(record.state==='submitting'||record.tasks?.some(t=>t.state==='running'))notice((record.phase||'生成中')+'，可继续操作；完成后回到历史查看。');
  if(record.prepareNote)notice(record.prepareNote,false);
  if(record.error)notice(record.error,true);
- let total=0;
+ if(record.chargeState==='uncertain'){
+  const release=document.createElement('button');
+  release.type='button';
+  release.textContent='已确认平台没有此任务，解除保护';
+  release.onclick=()=>{
+   if(!$('reset-confirm').checked){status('原提交状态不允许解除保护。请先到平台确认没有此任务，再勾选确认项。',true);return;}
+   record.chargeState='cleared';record.state='failed';queue.save();status('已解除保护。平台若没有此任务，可以再次生成。');tasksUI();
+  };
+  root.appendChild(release);
+ } else if(record.chargeState==='rejected') notice('平台未接单，可以再次生成。',false);
+ let total=0;const shownSources=[];
  (record.tasks||[]).forEach(task=>{
   if(task.error)notice(task.error,true);
   (task.results||[]).forEach((result,index)=>{
    total++;const card=document.createElement('div');card.className='task-result';root.appendChild(card);
    const badge=document.createElement('span');badge.className='task-badge';badge.textContent=String(total);card.appendChild(badge);
-   const img=document.createElement('img');img.src=result.source;img.alt='生成结果 '+total;
-   const caption=document.createElement('span');caption.className='task-caption';caption.textContent=result.imported?'已添加图层，可再次添加':record.hasSelection===false?'点击图片添加完整图层':'点击图片添加图层';
-   img.onload=()=>{caption.textContent=img.naturalWidth+' × '+img.naturalHeight;caption.title=result.imported?'已添加，可再次添加':'点击图片添加图层';};
-   img.onerror=()=>{caption.textContent='预览加载失败，仍可点击添加图层或保存原图';};
+   const img=document.createElement('img');img.alt='生成结果 '+total;
+   const hint=result.imported?'已添加，可再次添加':'点击图片添加图层';
+   const caption=document.createElement('span');caption.className='task-caption';caption.textContent=result.imported?'已添加图层，可再次添加':record.hasSelection===false?'点击图片添加完整图层':'点击图片添加图层';caption.title=hint;
+   if(result.source)shownSources.push(result.source);
+   bindCandidatePreview(img,caption,result.source,hint);
    const action={jobId:record.id,taskId:task.id,index};
    img.onclick=()=>withBusy(()=>candidateAction({...action,type:'import'}));
    caption.onclick=img.onclick;
@@ -285,6 +439,7 @@ function renderTasks(){
  });
  if(total && record.state!=='submitting'&&!record.tasks.some(t=>t.state==='running'))notice(record.hasSelection===false?'生成完成，点击候选图添加完整图层，或保存原图。':'生成完成，点击候选图添加图层。');
  else if(record.state!=='failed'&&record.state!=='uncertain'&&!record.error&&record.state!=='submitting'&&!record.tasks?.some(t=>t.state==='running'))notice('尚无生成结果。');
+ releasePreviewUrls(shownPreviewSources(shownSources));
 }
 function renumberHistory(){queue.jobs.slice().reverse().forEach((record,index)=>{record.number=index+1;record.title='局部改图 '+(index+1);});}
 async function deleteCaptureFiles(records,includeSharedSelection=false){
@@ -325,7 +480,10 @@ async function deleteHistoryRecord(id){
  tasksUI();status('已删除本机历史记录。已提交的平台任务不会因此取消。');
 }
 function openTaskPreview(result,action){
- const overlay=$('task-preview'),image=$('task-preview-image');image.src=result.source;
+ const overlay=$('task-preview'),image=$('task-preview-image'),note=$('task-preview-note');
+ const source=result&&result.source||'';
+ image.alt='生成结果预览';image.setAttribute('data-source',source);if(note)note.textContent='';
+ bindCandidatePreview(image,note,source,'放大预览');
  $('task-preview-save').onclick=()=>withBusy(()=>candidateAction({...action,type:'save'}));
  overlay.style.display='flex';
 }
@@ -353,7 +511,8 @@ function onDocumentTabScroll(){
  documentTabScrollLockUntil=Date.now()+80;
  moveDocumentTabRow(direction);
 }
-function tasksUI(){
+function tasksUI(){try{paintTasks();}catch(_){}}
+function paintTasks(){
  if(!queue)return;
  const tabs=$('document-tabs'),visible=visibleDocumentTabs();
  const nextTabs=JSON.stringify([selectedJobId,visible.map(j=>[j.id,j.title,j.number])]);
@@ -683,6 +842,36 @@ function captureDroppedFile(file){
   }catch(error){failed=error;}
   return {name:file.name,type:file.type,path:file.path,nativePath:file.nativePath,url:file.url,fullPath:file.fullPath,read:pending?async()=>pending:failed?async()=>{throw failed;}:typeof file.read==='function'?file.read.bind(file):undefined,arrayBuffer:pending||failed?undefined:typeof file.arrayBuffer==='function'?file.arrayBuffer.bind(file):undefined};
 }
+function listDropEntries(value){
+  if(!value)return [];
+  const out=[];
+  const push=entry=>{if(entry!=null&&out.length<32)out.push(entry);};
+  if(typeof value.length==='number'&&value.length>=0&&value.length<100000){
+    const count=Math.min(value.length,32);
+    for(let index=0;index<count;index++){
+      let entry=value[index];
+      if(entry==null&&typeof value.item==='function'){try{entry=value.item(index);}catch(_){entry=null;}}
+      push(entry);
+    }
+    if(out.length||count===0)return out;
+  }
+  try{for(const entry of Array.from(value))push(entry);}catch(_){}
+  return out;
+}
+function dropShape(transfer,locations,files){
+  const types=[];
+  for(const type of listDropEntries(transfer&&transfer.types)){
+    const text=String(type).slice(0,64);
+    if(/^[A-Za-z0-9][A-Za-z0-9.+_/\\-]{0,63}$/.test(text))types.push(text);
+  }
+  const readable=(files||[]).filter(file=>typeof file.read==='function'||typeof file.arrayBuffer==='function').length;
+  return {files:Math.min(listDropEntries(transfer&&transfer.files).length,8),items:Math.min(listDropEntries(transfer&&transfer.items).length,8),entries:Math.min(listDropEntries(transfer&&transfer.uxpEntries).length,8),paths:Math.min((locations||[]).length,8),readable:Math.min(readable,8),types:types.slice(0,8)};
+}
+async function reportDropShape(shape,accepted){
+  const record={files:shape.files,items:shape.items,entries:shape.entries,paths:shape.paths,readable:shape.readable,types:shape.types,accepted:!!accepted};
+  try{console.log('drop-trace '+JSON.stringify(record));}catch(_){}
+  try{await voice.request('/drop/trace','POST',record);}catch(_){}
+}
 // Explorer clears dataTransfer when the drop handler returns, and File.arrayBuffer()
 // often throws even though the path is still on the object. Capture both before awaiting.
 function snapshotDrop(transfer){
@@ -715,13 +904,13 @@ function snapshotDrop(transfer){
     remember(file.fullPath,file.name);
   };
   if(transfer){
-    for(const file of Array.from(transfer.files||[]))take(file);
-    for(const item of Array.from(transfer.items||[])){
+    for(const file of listDropEntries(transfer.files))take(file);
+    for(const item of listDropEntries(transfer.items)){
       if(item.kind&&item.kind!=='file')continue;
       try{take(typeof item.getAsFile==='function'?item.getAsFile():null);}catch(_){}
       try{const entry=typeof item.webkitGetAsEntry==='function'?item.webkitGetAsEntry():typeof item.getAsEntry==='function'?item.getAsEntry():null;if(entry)take(entry);}catch(_){}
     }
-    for(const entry of Array.from(transfer.uxpEntries||[]))take(entry);
+    for(const entry of listDropEntries(transfer.uxpEntries))take(entry);
   }
   for(const line of text.split(/\r?\n/)){
     const trimmed=line.trim();
@@ -734,9 +923,9 @@ function snapshotDrop(transfer){
 async function droppedFileGroups(transfer){
   const groups=[];
   if(!transfer)return groups;
-  const files=Array.from(transfer.files||[]);if(files.length)groups.push(files);
+  const files=listDropEntries(transfer.files);if(files.length)groups.push(files);
   const items=[];
-  for(const item of Array.from(transfer.items||[])){
+  for(const item of listDropEntries(transfer.items)){
     if(item.kind&&item.kind!=='file')continue;
     let file=typeof item.getAsFile==='function'?item.getAsFile():null;
     if(!file&&typeof item.getAsFileSystemHandle==='function'){
@@ -745,7 +934,7 @@ async function droppedFileGroups(transfer){
     if(file)items.push(file);
   }
   if(items.length)groups.push(items);
-  const entries=Array.from(transfer.uxpEntries||[]).filter(entry=>!entry.isFolder);
+  const entries=listDropEntries(transfer.uxpEntries).filter(entry=>!entry.isFolder);
   if(entries.length)groups.push(entries);
   if(typeof transfer.getFiles==='function'){
     try{const provided=Array.from(await transfer.getFiles()||[]);if(provided.length)groups.push(provided);}catch(_){}
@@ -786,29 +975,30 @@ async function payloadsFromLocations(locations){
 }
 let dropArm=null;
 function dropHelperDown(error){return /未开启|未连接|没有这个接口|拖入服务|助手/.test(String(error&&error.message||''));}
-function missDropMessage(helperDown){return helperDown?'本机图片拖入服务未开启。可粘贴图片，或点「添加图片」。':'这次没有读到拖入的图片。请拖到面板上停一下再松开；也可粘贴图片，或点「添加图片」。';}
-function startingDropMessage(){return '拖入接图层还在启动。请再拖一次；也可粘贴图片，或点「添加图片」。';}
-// UXP's drop often carries no file. Cover as soon as the drag enters, while the
-// button is still down, so the resident catch layer can take this same drop.
+function missDropMessage(helperDown){return helperDown?'本机图片拖入服务未开启。添加图片区域因此接不到资源管理器拖放。':'添加图片区域没有接到这次拖放的文件。';}
+function startingDropMessage(){return '添加图片区域的接图进程还没有就绪。';}
+// The catch window is the add-image box only. Anchor it with the pointer's
+// offset inside #dropzone so a wrong screen origin cannot park it elsewhere.
 function dragPoint(event){
-  const x=Number(event&&event.screenX),y=Number(event&&event.screenY),point={};
-  if(Number.isFinite(x))point.x=x;
-  if(Number.isFinite(y))point.y=y;
-  // CSS screen pixels match a DPI-unaware WinForms window. Send the in-panel
-  // dropzone rectangle so the catch layer sits on 「添加图片」, not the desktop.
+  const point={};
   const zone=$('dropzone');
   const rect=zone&&typeof zone.getBoundingClientRect==='function'?zone.getBoundingClientRect():null;
-  if(!rect||!(rect.width>=40)||!(rect.height>=40)||rect.width>280||rect.height>280)return point;
+  if(!rect)return point;
+  const width=Math.round(Number(rect.width)),height=Math.round(Number(rect.height));
+  if(!(width>=24)||!(height>=24)||width>800||height>360)return point;
+  point.width=width;
+  point.height=height;
   const clientX=Number(event&&event.clientX),clientY=Number(event&&event.clientY);
-  let originX=Number.isFinite(x)&&Number.isFinite(clientX)?x-clientX:NaN;
-  let originY=Number.isFinite(y)&&Number.isFinite(clientY)?y-clientY:NaN;
-  if(!Number.isFinite(originX)&&typeof window!=='undefined')originX=Number(window.screenX);
-  if(!Number.isFinite(originY)&&typeof window!=='undefined')originY=Number(window.screenY);
-  if(!Number.isFinite(originX)||!Number.isFinite(originY))return point;
-  point.left=Math.round(originX+rect.left);
-  point.top=Math.round(originY+rect.top);
-  point.width=Math.round(rect.width);
-  point.height=Math.round(rect.height);
+  const screenX=Number(event&&event.screenX),screenY=Number(event&&event.screenY);
+  if(Number.isFinite(clientX)&&Number.isFinite(clientY)){
+    point.offsetX=Math.round(clientX-Number(rect.left));
+    point.offsetY=Math.round(clientY-Number(rect.top));
+  }
+  if(Number.isFinite(screenX)&&Number.isFinite(screenY)){point.x=screenX;point.y=screenY;}
+  if(Number.isFinite(screenX)&&Number.isFinite(screenY)&&Number.isFinite(clientX)&&Number.isFinite(clientY)){
+    point.left=Math.round(screenX-clientX+Number(rect.left));
+    point.top=Math.round(screenY-clientY+Number(rect.top));
+  }
   return point;
 }
 function releaseDropOverlay(){
@@ -821,9 +1011,10 @@ function prewarmDropOverlay(){voice.request('/drop/arm','POST').catch(()=>{});}
 function dropGraceMs(){const override=typeof globalThis!=='undefined'?Number(globalThis.__lk888DropGraceMs):NaN;return override>0?override:3500;}
 async function takeDroppedReferences(arm,images){
   if(!images.length)return false;
-  arm.done=true;
-  if(arm.jobId!==selectedJobId){status('拖入的图片所属编辑已切换，未加入当前参考图。',true);return true;}
+  if(arm.jobId!==selectedJobId){arm.done=true;status('拖入的图片所属编辑已切换，未加入当前参考图。',true);return true;}
   await addReferencePayloads(images,arm.target||null);
+  arm.accepted=true;
+  arm.done=true;
   voice.request('/drop/hide','POST').catch(()=>{});
   return true;
 }
@@ -849,7 +1040,7 @@ async function pollArmedDrop(arm){
 async function armDropOverlay(event){
   if(dropArm&&!dropArm.done&&Date.now()-dropArm.at<8000&&(!dropArm.failed||Date.now()-dropArm.at<1200))return;
   const token=++dropPollToken,jobId=selectedJobId;
-  const arm={token,at:Date.now(),jobId,id:null,failed:false,helperDown:false,done:false,expecting:false,ready:false,dropAt:0,target:null};
+  const arm={token,at:Date.now(),jobId,id:null,failed:false,helperDown:false,done:false,expecting:true,ready:false,dropAt:0,target:null,zone:true,accepted:false};
   dropArm=arm;
   try{
     const opened=await voice.request('/drop/cover','POST',dragPoint(event));
@@ -872,37 +1063,67 @@ function dragLooksLikeFiles(event){
   if(!list.length)return true;
   return list.some(type=>type==='files'||type.includes('file')||type==='text/uri-list'||type==='application/x-moz-file');
 }
-function unresolvedDrop(target){
-  if(dropArm&&dropArm.done)return;
-  if(dropArm){
-    dropArm.target=target||dropArm.target;
-    if(dropArm.failed)throw new Error(missDropMessage(dropArm.helperDown));
-    dropArm.expecting=true;
-    status('正在加入拖入的图片…');
-    return;
+function eventInDropzone(event){
+  const zone=$('dropzone');
+  if(!zone||!event)return false;
+  if(event.currentTarget===zone)return true;
+  try{const path=typeof event.composedPath==='function'?event.composedPath():[];if(path&&path.indexOf&&path.indexOf(zone)>=0)return true;}catch(_){}
+  let node=event.target;
+  for(let depth=0;node&&depth<16;depth++){
+    if(node===zone)return true;
+    node=node.parentElement||node.parentNode;
   }
-  throw new Error(missDropMessage(false));
+  return false;
+}
+function uxpDragHasFiles(event){
+  const transfer=event&&event.dataTransfer;
+  if(!transfer)return false;
+  if(listDropEntries(transfer.files).length||listDropEntries(transfer.uxpEntries).length)return true;
+  return listDropEntries(transfer.items).some(item=>{
+    if(!item||(item.kind&&item.kind!=='file'))return false;
+    try{const file=typeof item.getAsFile==='function'?item.getAsFile():item;return !!(file&&(file.name||file.path||file.nativePath));}catch(_){return false;}
+  });
+}
+async function waitForZoneCatch(target){
+  const arm=dropArm;
+  if(!arm||!arm.zone)return false;
+  if(target)arm.target=target;
+  arm.expecting=true;
+  const deadline=Date.now()+dropGraceMs();
+  while(!arm.done&&!arm.accepted&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,40));
+  return !!arm.accepted;
 }
 async function addDroppedImages(payload,target = null){
   const snap=payload&&Array.isArray(payload.locations)?payload:snapshotDrop(payload);
-  if(!snap.transfer&&!snap.files.length&&!snap.locations.length&&!String(snap.text||'').trim()){unresolvedDrop(target);return;}
-  const groups=[];
-  if(snap.files.length)groups.push(snap.files);
-  for(const group of await droppedFileGroups(snap.transfer))groups.push(group);
-  for(const files of groups){if(!files.length)continue;try{await addFiles(files,target);releaseDropOverlay();return;}catch(error){if(!/无法读取|读取失败/.test(error.message||'')){releaseDropOverlay();throw error;}}}
-  const dataUrls=[];
-  for(const line of String(snap.text||'').split(/\r?\n/)){
-    const image=line.trim().match(/data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)/i);
-    if(!image)continue;
-    const buffer=fileUtils.base64ToArrayBuffer(image[2]);
-    const ext=image[1].toLowerCase()==='jpeg'?'jpg':image[1].toLowerCase();
-    dataUrls.push({name:'拖入图片.'+ext,arrayBuffer:async()=>buffer});
+  const shape=dropShape(snap.transfer,snap.locations,snap.files);
+  let accepted=false;
+  let readError=null;
+  try{
+    const groups=[];
+    if(snap.files.length)groups.push(snap.files);
+    for(const group of await droppedFileGroups(snap.transfer))groups.push(group);
+    for(const files of groups){if(!files.length)continue;try{await addFiles(files,target);releaseDropOverlay();accepted=true;return;}catch(error){readError=error;if(!/无法读取|读取失败/.test(error.message||'')){releaseDropOverlay();throw error;}}}
+    const dataUrls=[];
+    for(const line of String(snap.text||'').split(/\r?\n/)){
+      const image=line.trim().match(/data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)/i);
+      if(!image)continue;
+      const buffer=fileUtils.base64ToArrayBuffer(image[2]);
+      const ext=image[1].toLowerCase()==='jpeg'?'jpg':image[1].toLowerCase();
+      dataUrls.push({name:'拖入图片.'+ext,arrayBuffer:async()=>buffer});
+    }
+    if(dataUrls.length){await addFiles(dataUrls,target);releaseDropOverlay();accepted=true;return;}
+    const resolved=await payloadsFromLocations(snap.locations);
+    const payloads=Array.isArray(resolved)?resolved:(resolved&&resolved.payloads)||[];
+    if(payloads.length){await addReferencePayloads(payloads,target,!Array.isArray(resolved)&&resolved.truncated?' 一次最多 5 张，其余请再拖一次。':'');releaseDropOverlay();accepted=true;return;}
+    if(await waitForZoneCatch(target)){accepted=true;return;}
+    if(readError)throw readError;
+    if(dropArm&&dropArm.zone){
+      if(!dropArm.done){dropArm.done=true;status(dropArm.ready?missDropMessage(false):dropArm.helperDown?missDropMessage(true):startingDropMessage(),true);voice.request('/drop/hide','POST').catch(()=>{});}
+      return;
+    }
+  }finally{
+    await reportDropShape(shape,accepted);
   }
-  if(dataUrls.length){await addFiles(dataUrls,target);releaseDropOverlay();return;}
-  const resolved=await payloadsFromLocations(snap.locations);
-  const payloads=Array.isArray(resolved)?resolved:(resolved&&resolved.payloads)||[];
-  if(payloads.length){await addReferencePayloads(payloads,target,!Array.isArray(resolved)&&resolved.truncated?' 一次最多 5 张，其余请再拖一次。':'');releaseDropOverlay();return;}
-  unresolvedDrop(target);
 }
 function settingsPage(open){settingsOpen=open;navigatePage(open?'settings':'edit');}
 
@@ -943,7 +1164,7 @@ async function init() {
    $('document-tabs').addEventListener('scroll',onDocumentTabScroll);
    if(typeof window!=='undefined'&&window.addEventListener)window.addEventListener('resize',()=>syncDocumentTabScroll(visibleDocumentTabs()));
    bindCriticalActions();
-   $('task-preview-close').addEventListener('click',()=>{$('task-preview').style.display='none';$('task-preview-image').removeAttribute('src');});
+   $('task-preview-close').addEventListener('click',closeTaskPreview);
   if(typeof setInterval!=='undefined')setInterval(()=>queue.tick(),1500);
   queue.jobs.forEach((j,i)=>{j.number ||= queue.jobs.length-i;j.title ||= '局部改图 '+j.number;});
   queue.tick();settingsPage(false);const reloadJobId=localStorage.getItem('lk888-reload-job-id');localStorage.removeItem('lk888-reload-job-id');if(queue.jobs.length&&!sourceImage){try{await withTimeout(openHistory(queue.jobs.find(j=>j.id===reloadJobId)?.id||queue.jobs[0].id),8000,'恢复历史超时');}catch(error){status('历史记录恢复失败：'+(error.message||error)+'。可以直接读取选区。',true);}}
@@ -974,21 +1195,36 @@ async function init() {
   }));
   $('reset-job').addEventListener('click', () => {
     if (busy) { status('正在处理…', true); return; }
-    if (!$('reset-confirm').checked) { status('请先在平台确认原任务，再勾选设置中的确认项。', true); return; }
+    const record=queue?.jobs.find(item=>item.id===selectedJobId);
+    const protectedState=record&&(record.chargeState==='uncertain'||(record.chargeState==='accepted'&&record.state==='running'));
+    if (protectedState && !$('reset-confirm').checked) { status('原提交状态不允许解除保护。请先到平台确认没有此任务，再勾选确认项。', true); return; }
+    if (record&&record.chargeState==='uncertain') { record.chargeState='cleared'; record.state='failed'; queue.save(); }
     job = null; saveJob(); $('reset-confirm').checked = false; status('已结束本机任务记录。不会取消平台任务。'); refresh();
   });
   $('add-reference').addEventListener('click',()=>withBusy(async()=>{
     status('请选择要添加的参考图片…');
     const context=selectedJobId;
-    const result=await voice.request('/pick-images');
+    const picked=await storage.localFileSystem.getFileForOpening({allowMultiple:true,types:['png','jpg','jpeg','webp']});
     if(context!==selectedJobId)return;
-    const images=Array.isArray(result.images)?result.images:[];
-    if(!images.length){status('已取消添加图片。');return;}
-    for(const image of images){
-      if(typeof image.data!=='string'||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(image.data))throw new Error('图片格式无效，请使用 PNG、JPG 或 WebP。');
+    const files=Array.isArray(picked)?picked:picked?[picked]:[];
+    if(!files.length){status('已取消添加图片。');return;}
+    const added=[],problems=[];
+    for(const file of files){
+      const name=String(file&&file.name||'参考图片');
+      try{
+        const declared=imageExtension(name);
+        if(declared&&!['png','jpg','jpeg','webp'].includes(declared)){problems.push(name+' 不是 PNG、JPG 或 WebP。');continue;}
+        const buffer=await file.read({format:storage.formats.binary});
+        if(!buffer||!buffer.byteLength){problems.push(name+' 是空文件。');continue;}
+        const sniffed=declared||sniffImageExt(buffer);
+        if(!sniffed||!['png','jpg','jpeg','webp'].includes(sniffed)){problems.push(name+' 不是 PNG、JPG 或 WebP。');continue;}
+        const safe=sniffed==='jpeg'?'jpg':sniffed;
+        added.push({name:name.slice(0,150),data:'data:image/'+(safe==='jpg'?'jpeg':safe)+';base64,'+fileUtils.arrayBufferToBase64(buffer)});
+      }catch(_){problems.push(name+' 无法读取。');}
     }
-    references.push(...images.map(image=>({name:String(image.name||'参考图片'),data:image.data})));
-    syncInputs();await saveCurrent();status('已添加 '+images.length+' 张参考图。');
+    if(added.length){references.push(...added);syncInputs();await saveCurrent();}
+    if(!added.length){status(problems.join(' ')||'没有读到可添加的图片。',true);return;}
+    status('已添加 '+added.length+' 张参考图。'+(problems.length?problems.join(' '):''),!!problems.length);
     $('input-notice').textContent='';
   }));
   $('paste-reference').addEventListener('click',()=>promptEditor.pasteImage());
@@ -999,8 +1235,16 @@ async function init() {
   document.addEventListener('mousemove',moveReferenceOnPointer);
   document.addEventListener('mouseup',endReferencePointer);
   const imageRow=$('images-row'),dropzone=$('dropzone');
-  const acceptDrag=event=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='copy';dropzone.classList.add('dragging');if(dragLooksLikeFiles(event))return armDropOverlay(event);};
+  const allowPanelDrag=event=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='copy';};
+  const armZone=event=>{
+    allowPanelDrag(event);
+    dropzone.classList.add('dragging');
+    if(uxpDragHasFiles(event)||!dragLooksLikeFiles(event))return;
+    armDropOverlay(event);
+  };
   const handleImageDrop=event=>{
+    if(event&&event.__lk888Drop)return;
+    if(event)event.__lk888Drop=true;
     const snap=snapshotDrop(event&&event.dataTransfer);
     event.preventDefault();event.stopPropagation?.();dropzone.classList.remove('dragging');
     let target=null,node=event.target;
@@ -1012,16 +1256,22 @@ async function init() {
       if(!parent||parent===node)break;
       node=parent;
     }
+    const hasPayload=snap.files.length||snap.locations.length||String(snap.text||'').trim()||typeof (snap.transfer&&snap.transfer.getFiles)==='function';
+    if(!hasPayload){
+      if(eventInDropzone(event))return addDroppedImages(snap,target).catch(error=>status(error.message||'拖入失败。',true));
+      releaseDropOverlay();
+      return;
+    }
     return withBusy(()=>addDroppedImages(snap,target));
   };
-  document.addEventListener('dragenter',acceptDrag,true);
-  document.addEventListener('dragover',acceptDrag,true);
+  document.addEventListener('dragenter',allowPanelDrag,true);
+  document.addEventListener('dragover',allowPanelDrag,true);
   document.addEventListener('dragleave',event=>{if(!document.contains?.(event.relatedTarget))dropzone.classList.remove('dragging');},true);
-  imageRow.addEventListener('dragenter',acceptDrag);
-  imageRow.addEventListener('dragover',acceptDrag);
+  imageRow.addEventListener('dragenter',allowPanelDrag);
+  imageRow.addEventListener('dragover',allowPanelDrag);
   imageRow.addEventListener('drop',handleImageDrop);
-  dropzone.addEventListener('dragenter',acceptDrag);
-  dropzone.addEventListener('dragover',acceptDrag);
+  dropzone.addEventListener('dragenter',armZone,true);
+  dropzone.addEventListener('dragover',armZone,true);
   dropzone.addEventListener('drop',handleImageDrop);
   // Bubble, not capture. UXP often only fills dataTransfer for the element under the cursor;
   // a capture listener on document would see an empty drop and cancel the real target.

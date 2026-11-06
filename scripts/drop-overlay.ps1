@@ -1,11 +1,12 @@
-﻿# Resident catch layer. The helper starts this process at boot.
-# While a drag is active the panel calls /drop/cover with the on-screen
-# rectangle of #dropzone. This window covers only that box so Explorer can
-# drop onto it. No title bar, no taskbar button, never the whole desktop.
+﻿# Add-area catch. The helper starts this process at boot with the window hidden.
+# While a drag is over #dropzone the panel calls /drop/cover with that box's
+# size and the pointer's offset inside it. This window is moved to that box
+# only, so Explorer can drop on the add-image area. It is never a desktop-sized
+# layer, never a cursor-following pad, and it has no title, label, or border.
 # Do not set Form.Opacity. A value below 1 makes a layered window, and Windows
 # will not deliver an Explorer file drop to a layered window.
 # Do not call SetProcessDPIAware. Cursor.Position and this form then share
-# WinForms logical pixels, the same space as the panel's CSS screen rect.
+# WinForms logical pixels. The panel's offset is in that same CSS pixel space.
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -49,7 +50,7 @@ public class OverlayNative {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 }
 '@
-$sync = [hashtable]::Synchronized(@{ action = 'idle'; id = ''; x = $null; y = $null; left = $null; top = $null; width = $null; height = $null; gen = 0; miss = 0; stop = $false })
+$sync = [hashtable]::Synchronized(@{ action = 'idle'; id = ''; x = $null; y = $null; left = $null; top = $null; width = $null; height = $null; offsetX = $null; offsetY = $null; gen = 0; miss = 0; stop = $false })
 $form = New-Object QuietDropForm
 $form.FormBorderStyle = 'None'
 $form.ShowInTaskbar = $false
@@ -58,20 +59,11 @@ $form.AllowDrop = $true
 $form.AutoScaleMode = 'None'
 $form.StartPosition = 'Manual'
 $form.Text = ''
-# Same dark fill as the panel dropzone, with a 1px highlight so the box reads
-# as the dashed target without covering Photoshop.
-$form.Padding = New-Object System.Windows.Forms.Padding(1)
-$form.BackColor = [System.Drawing.Color]::FromArgb(138, 180, 255)
-$form.Size = New-Object System.Drawing.Size(104, 96)
-$label = New-Object System.Windows.Forms.Label
-$label.Text = '松手添加'
-$label.Dock = 'Fill'
-$label.TextAlign = 'MiddleCenter'
-$label.AllowDrop = $true
-$label.ForeColor = [System.Drawing.Color]::FromArgb(242, 242, 242)
-$label.BackColor = [System.Drawing.Color]::FromArgb(53, 53, 53)
-try { $label.Font = New-Object System.Drawing.Font('Microsoft YaHei', 9) } catch {}
-$form.Controls.Add($label)
+# Same fill as the panel surface. No label and no colored edge: the window is
+# the add-image area itself, not a second dialog.
+$form.Padding = New-Object System.Windows.Forms.Padding(0)
+$form.BackColor = [System.Drawing.Color]::FromArgb(53, 53, 53)
+$form.Size = New-Object System.Drawing.Size(32, 32)
 $script:shownId = ''
 $script:sessionId = ''
 $script:holdOffId = ''
@@ -109,43 +101,37 @@ function Get-DpiScale {
   return $script:dpiScale
 }
 function Test-PointInRect($pt, $left, $top, $width, $height, $slack) {
-  if ($width -lt 40 -or $height -lt 40 -or $width -gt 640 -or $height -gt 480) { return $false }
+  if ($width -lt 24 -or $height -lt 24 -or $width -gt 800 -or $height -gt 360) { return $false }
   if ($left -lt -8000 -or $left -gt 16000 -or $top -lt -8000 -or $top -gt 16000) { return $false }
   return ($pt.X -ge ($left - $slack)) -and ($pt.X -lt ($left + $width + $slack)) -and ($pt.Y -ge ($top - $slack)) -and ($pt.Y -lt ($top + $height + $slack))
 }
-function Clamp-AroundCursor($left, $top, $width, $height, $pt) {
-  $maxW = 480; $maxH = 360; $minW = 180; $minH = 160
-  if ($width -lt $minW) { $left -= [int](($minW - $width) / 2); $width = $minW }
-  if ($height -lt $minH) { $top -= [int](($minH - $height) / 2); $height = $minH }
-  if ($width -gt $maxW) { $left = [int]$pt.X - [int]($maxW / 2); $width = $maxW }
-  if ($height -gt $maxH) { $top = [int]$pt.Y - [int]($maxH / 2); $height = $maxH }
-  return New-Object System.Drawing.Rectangle([int]$left, [int]$top, [int]$width, [int]$height)
-}
 function Get-CoverRect($pt) {
-  # UXP CSS screen pixels and this form's pixels often differ by the DPI scale.
-  # A 104x96 rect from the panel is then beside the cursor, Explorer never
-  # enters it, and the poll ends with no upload. Use the rect only when it
-  # actually contains Cursor.Position; otherwise keep a small pad under the cursor.
-  $baseLeft = 0.0; $baseTop = 0.0; $baseW = 0.0; $baseH = 0.0; $has = $false
+  # Place the window on the add-image box by the pointer's offset inside it.
+  # Absolute screen coordinates from UXP were landing beside the cursor, so
+  # Explorer dropped on the panel and the upload never arrived. Do not invent
+  # a pad under the cursor: that pad is a separate window and covers other controls.
+  $baseW = 0.0; $baseH = 0.0
+  try { $baseW = [double]$sync.width; $baseH = [double]$sync.height } catch {}
+  if ($baseW -lt 24 -or $baseH -lt 24 -or $baseW -gt 800 -or $baseH -gt 360) { return $null }
+  $ox = $null; $oy = $null
   try {
-    $baseLeft = [double]$sync.left; $baseTop = [double]$sync.top; $baseW = [double]$sync.width; $baseH = [double]$sync.height
-    if ($baseW -ge 40 -and $baseH -ge 40 -and $baseW -le 280 -and $baseH -le 280) { $has = $true }
+    if ($null -ne $sync.offsetX -and "$($sync.offsetX)" -ne '') { $ox = [double]$sync.offsetX }
+    if ($null -ne $sync.offsetY -and "$($sync.offsetY)" -ne '') { $oy = [double]$sync.offsetY }
   } catch {}
-  if ($has) {
-    $scale = Get-DpiScale
-    $factors = @(1.0)
-    if ($scale -gt 1.05) { $factors = @(1.0, $scale, (1.0 / $scale)) }
-    foreach ($factor in $factors) {
-      $left = $baseLeft * $factor; $top = $baseTop * $factor; $width = $baseW * $factor; $height = $baseH * $factor
-      # Pad is 64px, so the cursor must already sit inside that pad. A rect that
-      # only "almost" contains the cursor is the misplaced 104x96 window.
-      if (Test-PointInRect $pt $left $top $width $height 48) {
-        $rect = Clamp-AroundCursor ($left - 64) ($top - 64) ($width + 128) ($height + 128) $pt
-        if (Test-PointInRect $pt $rect.X $rect.Y $rect.Width $rect.Height 0) { return $rect }
-      }
-    }
+  if ($null -ne $ox -and $null -ne $oy) {
+    $left = [int][Math]::Round($pt.X - $ox)
+    $top = [int][Math]::Round($pt.Y - $oy)
+    $rect = New-Object System.Drawing.Rectangle($left, $top, [int][Math]::Round($baseW), [int][Math]::Round($baseH))
+    if (Test-PointInRect $pt $rect.X $rect.Y $rect.Width $rect.Height 1) { return $rect }
+    return $null
   }
-  return New-Object System.Drawing.Rectangle(($pt.X - 116), ($pt.Y - 112), 232, 224)
+  try {
+    $left = [double]$sync.left; $top = [double]$sync.top
+    if (Test-PointInRect $pt $left $top $baseW $baseH 1) {
+      return New-Object System.Drawing.Rectangle([int][Math]::Round($left), [int][Math]::Round($top), [int][Math]::Round($baseW), [int][Math]::Round($baseH))
+    }
+  } catch {}
+  return $null
 }
 function Keep-Topmost {
   if ($form.Visible) { [OverlayNative]::SetWindowPos($form.Handle, [IntPtr](-1), 0, 0, 0, 0, [uint32]0x0013) | Out-Null }
@@ -157,7 +143,6 @@ function Enable-DropTarget {
   # is already dragging revokes the OLE target and the release stays on UXP.
   if ($script:dropRegistered) { return }
   $form.AllowDrop = $true
-  $label.AllowDrop = $true
   $script:dropRegistered = $true
 }
 function Pulse-Drag {
@@ -165,7 +150,7 @@ function Pulse-Drag {
   $pt = Get-CursorPoint
   # +1 then -1 has to stay on the catch. A pulse from the edge walks the
   # hotspot onto the UXP panel and the drop is empty again.
-  $inside = $form.Visible -and $pt.X -ge ($form.Left + 12) -and $pt.X -lt ($form.Right - 12) -and $pt.Y -ge ($form.Top + 12) -and $pt.Y -lt ($form.Bottom - 12)
+  $inside = $form.Visible -and $pt.X -ge ($form.Left + 4) -and $pt.X -lt ($form.Right - 4) -and $pt.Y -ge ($form.Top + 4) -and $pt.Y -lt ($form.Bottom - 4)
   if (-not $inside) { return }
   $script:pulsed = $true
   try { [OverlayNative]::PulseDrag() } catch {}
@@ -173,10 +158,11 @@ function Pulse-Drag {
 function Update-Cover([string]$id) {
   if ($script:holdOffId -eq $id) { return }
   $pt = Get-CursorPoint
+  $bounds = Get-CoverRect $pt
+  if ($null -eq $bounds) { Hide-Cover; return }
   $same = $script:shownId -eq $id -and $form.Visible
   if ($same -and $script:over) { Keep-Topmost; return }
   if ($same -and (Test-Inside $pt)) { Keep-Topmost; Pulse-Drag; return }
-  $bounds = Get-CoverRect $pt
   $form.Bounds = $bounds
   if (-not $same) { $script:over = $false }
   $script:shownId = $id
@@ -215,7 +201,7 @@ function Send-References($refs) {
 }
 function Reference-FromFile([string]$file) {
   $info = [System.IO.FileInfo]::new($file)
-  if ($info.Length -gt 10MB) { throw '每张图片不超过 10MB。' }
+  if ($info.Length -gt 40MB) { throw '每张图片不超过 40MB。' }
   $mime = switch ($info.Extension.ToLowerInvariant()) { '.jpg' { 'image/jpeg' } '.jpeg' { 'image/jpeg' } '.webp' { 'image/webp' } default { 'image/png' } }
   return @{ name = $info.Name; data = ('data:' + $mime + ';base64,' + [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($info.FullName))) }
 }
@@ -261,11 +247,7 @@ $onDrop = {
 $form.Add_DragEnter($onEnter)
 $form.Add_DragOver($onEnter)
 $form.Add_DragDrop($onDrop)
-$label.Add_DragEnter($onEnter)
-$label.Add_DragOver($onEnter)
-$label.Add_DragDrop($onDrop)
 $form.Add_DragLeave({ $script:over = $false })
-$label.Add_DragLeave({ $script:over = $false })
 $null = $form.Handle
 # Create the drop target before any drag. Showing off-screen once lets
 # AllowDrop stick; later covers only move the window.
@@ -300,6 +282,8 @@ $poll = {
       $state.top = $view.top
       $state.width = $view.width
       $state.height = $view.height
+      $state.offsetX = $view.offsetX
+      $state.offsetY = $view.offsetY
       $since = [int]$view.gen
       $state.miss = 0
     } catch {
@@ -327,7 +311,7 @@ $timer.Add_Tick({
   if (-not $form.Visible) { return }
   if (Test-MouseDown) { $script:upSince = $null; return }
   if (-not $script:upSince) { $script:upSince = Get-Date; return }
-  if (-not $script:over -and ((Get-Date) - $script:upSince).TotalMilliseconds -ge 700) {
+  if (((Get-Date) - $script:upSince).TotalMilliseconds -ge 200) {
     $script:holdOffId = $id
     Hide-Cover
   }
