@@ -26,12 +26,14 @@ class TaskQueue{
   if(note)record.prepareNote=note;
   record.timings.preparedAt=Date.now();record.phase='上传图片，等待平台接单';
   record.pendingSubmissions=record.count;record.state='submitting';this.save();
-  // Each requested output is submitted once. Independent requests need not wait
-  // for the preceding model task to be accepted or completed.
+  // Each requested output is its own task. The same prompt and images with no
+  // seed make image models return the same picture, so every extra slot gets
+  // a different seed. A single image keeps the previous request shape.
   const failures=[];
   await Promise.all(Array.from({length:record.count},async(_,index)=>{
+   const slotParams=record.count>1?{...params,seed:variationSeed(index)}:{...params};
    try{
-    const submitted=await api.submit(record.model,record.instruction,images,params);
+    const submitted=await api.submit(record.model,record.instruction,images,slotParams);
     if(submitted&&typeof submitted==='object'){
      if(submitted.note)record.prepareNote=submitted.note;
      if(Array.isArray(submitted.images)&&submitted.images.length){
@@ -65,4 +67,8 @@ class TaskQueue{
   if(job.state!=='uncertain'&&!job.pendingSubmissions)job.state=job.tasks.every(t=>t.state==='ready')?'ready':job.tasks.some(t=>t.state==='running')?'running':'failed';
  }catch(e){task.error=e.message;if(e.terminal){task.state='failed';task.results=[];if(job.state!=='uncertain')job.state=job.tasks.some(t=>t.state==='running')?'running':'failed';}}finally{this.querying.delete(task.id);this.save();}}
 }
-module.exports={TaskQueue};
+function variationSeed(index){
+  const mix=Date.now()+(index+1)*104729+Math.floor(Math.random()*1000000000);
+  return mix%2147483646+1;
+}
+module.exports={TaskQueue,variationSeed};
