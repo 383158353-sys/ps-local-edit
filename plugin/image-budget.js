@@ -1,6 +1,12 @@
 // Upload copies only. Local preview and layer restore keep the original data URL.
 const jpeg = require('./jpeg-js');
-const UPLOAD_BYTE_BUDGET = 45 * 1024 * 1024;
+// LK888 rejects a decoded file over 10MB and content/total over about 14MB.
+const PER_FILE_DECODED = 10 * 1024 * 1024;
+const AGGREGATE_DECODED = 14 * 1024 * 1024;
+const AGGREGATE_ENCODED = 14 * 1024 * 1024;
+const UPLOAD_BYTE_BUDGET = AGGREGATE_ENCODED;
+const NOTE_ORIGINAL = '图片使用原图提交。';
+const NOTE_LOSSLESS = '图片较大，已无损压缩后提交。';
 const NOTE_JPEG = '图片较大，已用高质量 JPEG 轻度压缩后提交。';
 const NOTE_SCALED = '图片较大，已按比例轻度缩小并压缩后提交。';
 
@@ -160,57 +166,184 @@ function frameAt(bitmap, scale) {
   const height = Math.max(1, Math.round(bitmap.height * scale));
   return { width, height, data: boxDownscale(bitmap.data, bitmap.width, bitmap.height, width, height) };
 }
-function compressToBudget(bitmap, budget, minEdge) {
-  const attempts = [{ scale: 1, quality: 92 }, { scale: 1, quality: 86 }, { scale: 1, quality: 80 }];
-  for (const scale of [0.9, 0.82, 0.74, 0.66, 0.58, 0.5]) attempts.push({ scale, quality: 90 });
+function decodedBytes(url) {
+  if (typeof url !== 'string') return 0;
+  const comma = url.indexOf(',');
+  const body = (comma >= 0 ? url.slice(comma + 1) : url).replace(/\s+/g, '');
+  if (!body) return 0;
+  const pad = body.endsWith('==') ? 2 : body.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor(body.length * 3 / 4) - pad);
+}
+function hasTransparency(data) {
+  for (let i = 3; i < data.length; i += 4) if (data[i] !== 255) return true;
+  return false;
+}
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    crc ^= bytes[i];
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+function pngChunk(type, data) {
+  const out = new Uint8Array(12 + data.length);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, data.length);
+  for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+  out.set(data, 8);
+  view.setUint32(8 + data.length, crc32(out.subarray(4, 8 + data.length)));
+  return out;
+}
+function encodeDeflatedPng(bitmap) {
+  let zlib;
+  try { zlib = require('zlib'); } catch (_) { return null; }
+  const transparent = hasTransparency(bitmap.data);
+  const components = transparent ? 4 : 3;
+  const stride = bitmap.width * components;
+  const raw = new Uint8Array(bitmap.height * (stride + 1));
+  for (let y = 0; y < bitmap.height; y++) {
+    const dest = y * (stride + 1) + 1;
+    if (components === 4) raw.set(bitmap.data.subarray(y * stride, (y + 1) * stride), dest);
+    else for (let x = 0; x < bitmap.width; x++) {
+      const source = (y * bitmap.width + x) * 4;
+      const at = dest + x * 3;
+      raw[at] = bitmap.data[source]; raw[at + 1] = bitmap.data[source + 1]; raw[at + 2] = bitmap.data[source + 2];
+    }
+  }
+  const deflated = zlib.deflateSync(raw);
+  const ihdr = new Uint8Array(13);
+  const view = new DataView(ihdr.buffer);
+  view.setUint32(0, bitmap.width); view.setUint32(4, bitmap.height);
+  ihdr[8] = 8; ihdr[9] = components === 4 ? 6 : 2;
+  const signature = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  return concatBytes([signature, pngChunk('IHDR', ihdr), pngChunk('IDAT', deflated), pngChunk('IEND', new Uint8Array())]);
+}
+function losslessUrl(bitmap) {
+  const png = encodeDeflatedPng(bitmap);
+  return png ? 'data:image/png;base64,' + toBase64(png) : '';
+}
+function fitsFile(url, perFile, encodedBudget) {
+  return !!url && decodedBytes(url) <= perFile && url.length <= encodedBudget;
+}
+function compressToBudget(bitmap, perFile, encodedBudget, minEdge) {
+  const transparent = hasTransparency(bitmap.data);
+  const scales = [1, 0.9, 0.82, 0.74, 0.66, 0.58, 0.5];
+  const qualities = [92, 86, 80];
   let best = null;
-  for (const attempt of attempts) {
-    const frame = frameAt(bitmap, attempt.scale);
-    if (attempt.scale !== 1 && Math.min(frame.width, frame.height) < minEdge) continue;
-    const url = jpegDataUrl(frame.data, frame.width, frame.height, attempt.quality);
-    const candidate = { url, scaled: attempt.scale !== 1, quality: attempt.quality, width: frame.width, height: frame.height };
+  const consider = (url, scaled, kind) => {
+    if (!url) return null;
+    const candidate = { url, scaled, kind: scaled ? 'scaled' : kind };
     if (!best || url.length < best.url.length) best = candidate;
-    if (url.length <= budget) return candidate;
+    return fitsFile(url, perFile, encodedBudget) ? candidate : null;
+  };
+  for (const scale of scales) {
+    const frame = frameAt(bitmap, scale);
+    if (scale !== 1 && Math.min(frame.width, frame.height) < minEdge) continue;
+    const scaled = scale !== 1;
+    const lossless = consider(losslessUrl(frame), scaled, 'lossless');
+    if (lossless) return lossless;
+    if (!transparent || scale !== 1) {
+      for (const quality of (scale === 1 ? qualities : [90])) {
+        const encoded = consider(jpegDataUrl(frame.data, frame.width, frame.height, quality), scaled, 'jpeg');
+        if (encoded) return encoded;
+      }
+    }
   }
   return best;
 }
-function payloadLength(images, overhead) {
-  return images.reduce((sum, image) => sum + (typeof image === 'string' ? image.length : 0), 0) + overhead;
+function resolveLimits(options = {}) {
+  const limits = {
+    perFileDecoded: PER_FILE_DECODED,
+    aggregateDecoded: AGGREGATE_DECODED,
+    aggregateEncoded: AGGREGATE_ENCODED,
+    ...(options.limits || {})
+  };
+  if (options.targetBytes) limits.aggregateEncoded = Math.min(limits.aggregateEncoded, options.targetBytes);
+  if (!options.targetBytes && !options.limits) {
+    limits.perFileDecoded -= 256 * 1024;
+    limits.aggregateDecoded -= 512 * 1024;
+    limits.aggregateEncoded -= 512 * 1024;
+  }
+  return limits;
+}
+function usage(images, overhead) {
+  let decoded = 0, encoded = overhead;
+  const files = [];
+  for (const image of images) {
+    const file = decodedBytes(image);
+    files.push(file);
+    decoded += file;
+    encoded += typeof image === 'string' ? image.length : 0;
+  }
+  return { decoded, encoded, files };
+}
+function overLimit(images, limits, overhead) {
+  const total = usage(images, overhead);
+  if (total.decoded > limits.aggregateDecoded || total.encoded > limits.aggregateEncoded) return true;
+  return total.files.some(file => file > limits.perFileDecoded);
 }
 function fitUploadImages(images, options = {}) {
   const list = Array.isArray(images) ? images.slice() : [];
-  const target = options.targetBytes || UPLOAD_BYTE_BUDGET;
+  const limits = resolveLimits(options);
   const minEdge = options.minEdge || 1600;
   const overhead = options.overheadBytes == null ? 8192 : options.overheadBytes;
-  if (payloadLength(list, overhead) <= target) return { images: list, compressed: false, scaled: false, note: '' };
-  const states = list.map(url => ({ url: typeof url === 'string' ? url : '', done: false, compressed: false, scaled: false }));
+  if (!overLimit(list, limits, overhead)) return { images: list, compressed: false, scaled: false, lossless: false, note: '' };
+  const states = list.map(url => ({ url: typeof url === 'string' ? url : '', done: false, compressed: false, scaled: false, lossless: false }));
   let guard = 0;
-  while (payloadLength(states.map(state => state.url), overhead) > target && guard < states.length + 1) {
+  while (overLimit(states.map(state => state.url), limits, overhead) && guard < states.length + 2) {
     guard++;
     let index = -1;
-    for (let i = 0; i < states.length; i++) if (!states[i].done && (index < 0 || states[i].url.length > states[index].url.length)) index = i;
+    for (let i = 0; i < states.length; i++) if (!states[i].done && (index < 0 || decodedBytes(states[i].url) > decodedBytes(states[index].url))) index = i;
     if (index < 0) break;
     const bitmap = decodeDataUrl(states[index].url);
     if (!bitmap) { states[index].done = true; continue; }
-    const others = states.reduce((sum, state, item) => sum + (item === index ? 0 : state.url.length), 0);
-    const budget = Math.max(1024, target - overhead - others);
-    const compressed = compressToBudget(bitmap, budget, minEdge);
+    const others = states.filter((_, item) => item !== index).map(state => state.url);
+    const otherUsage = usage(others, overhead);
+    const perFile = limits.perFileDecoded;
+    const encodedBudget = Math.max(1024, limits.aggregateEncoded - otherUsage.encoded);
+    const decodedBudget = Math.max(1024, limits.aggregateDecoded - otherUsage.decoded);
+    const compressed = compressToBudget(bitmap, Math.min(perFile, decodedBudget), encodedBudget, minEdge);
     if (!compressed || compressed.url.length >= states[index].url.length) { states[index].done = true; continue; }
     states[index].url = compressed.url;
     states[index].compressed = true;
     states[index].scaled = states[index].scaled || compressed.scaled;
-    states[index].done = compressed.url.length <= budget;
+    states[index].lossless = states[index].lossless || compressed.kind === 'lossless';
+    states[index].done = fitsFile(compressed.url, Math.min(perFile, decodedBudget), encodedBudget);
   }
-  if (payloadLength(states.map(state => state.url), overhead) > target) {
-    const error = new Error('图片仍超过平台约 50MB 上限。请缩小选区或减少参考图后再生成。');
+  if (overLimit(states.map(state => state.url), limits, overhead)) {
+    const error = new Error('图片内容或总量仍超过平台限制。请缩小选区或减少参考图后再生成。');
     error.terminal = true;
+    error.sizeRejected = true;
     throw error;
   }
   const compressed = states.some(state => state.compressed);
   const scaled = states.some(state => state.scaled);
-  return { images: states.map(state => state.url), compressed, scaled, note: compressed ? (scaled ? NOTE_SCALED : NOTE_JPEG) : '' };
+  const lossless = compressed && states.filter(state => state.compressed).every(state => state.lossless);
+  const note = !compressed ? '' : scaled ? NOTE_SCALED : lossless ? NOTE_LOSSLESS : NOTE_JPEG;
+  return { images: states.map(state => state.url), compressed, scaled, lossless, note };
+}
+function parseSizeLimits(message) {
+  const text = String(message || '');
+  const numbers = [...text.matchAll(/(\d+(?:\.\d+)?)\s*MB/gi)].map(match => Math.round(parseFloat(match[1]) * 1024 * 1024));
+  const limits = {};
+  if (!numbers.length) return limits;
+  if (/解码|单文件|images\[\d+\]/i.test(text)) limits.perFileDecoded = numbers[0];
+  if (/总量|请求体|内容或总量|合计/.test(text)) limits.aggregateEncoded = numbers[numbers.length - 1];
+  if (/请求体过大/.test(text)) limits.aggregateEncoded = numbers[0];
+  return limits;
+}
+function tightenLimits(limits) {
+  const tighter = {};
+  for (const key of Object.keys(limits || {})) if (limits[key] > 0) tighter[key] = Math.floor(limits[key] * 0.9);
+  return tighter;
+}
+function isExplicitSizeRejection(message) {
+  const text = String(message || '');
+  if (/不确定|是否已接单|勿重复/.test(text)) return false;
+  return /文件过大|解码后|不能超过|总量超过|请求体过大|内容或总量|超过\s*\d+(?:\.\d+)?\s*MB|payload too large|\b413\b/i.test(text);
 }
 function isImageDataUrl(value) {
   return typeof value === 'string' && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=\s]+$/i.test(value.trim());
 }
-module.exports = { UPLOAD_BYTE_BUDGET, fitUploadImages, decodeDataUrl, storedPngBytes, isImageDataUrl, NOTE_JPEG, NOTE_SCALED };
+module.exports = { UPLOAD_BYTE_BUDGET, PER_FILE_DECODED, AGGREGATE_DECODED, AGGREGATE_ENCODED, fitUploadImages, decodeDataUrl, decodedBytes, storedPngBytes, isImageDataUrl, parseSizeLimits, tightenLimits, isExplicitSizeRejection, NOTE_ORIGINAL, NOTE_JPEG, NOTE_SCALED, NOTE_LOSSLESS };

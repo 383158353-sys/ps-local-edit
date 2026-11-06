@@ -2,6 +2,7 @@
  * Protocol reference: Corkery520/ComfyUI-MengBaoAI/api/image_client.py.
  * No API keys, prompts or image payloads are logged.
  */
+const {fitUploadImages,isExplicitSizeRejection,parseSizeLimits,tightenLimits}=require('./image-budget');
 const MODELS = [
   { id: 'banana-2', label: 'Nano Banana 2' },
   { id: 'gemini-nano-banana-2.1', label: 'Banana 2.1' },
@@ -156,6 +157,9 @@ class MediaClient {
         payload = unwrap(payload)?.error ? unwrap(payload) : payload;
         const error = payload.error;
         const failure=new Error(providerError(payload,response.status));
+        const acceptedId=submissionTaskId(payload);
+        if (acceptedId) { failure.taskId=acceptedId; }
+        else if (isExplicitSizeRejection(failure.message)) { failure.sizeRejected=true; failure.terminal=true; failure.uncertain=false; failure.limits=parseSizeLimits(failure.message); }
         if (localSubmission && /语音会话已结束|未知语音请求|本机服务没有这个接口/.test(failure.message)) {
           const missed=new Error('本机助手还没有生图接口。');
           missed.localRouteMissing=true;
@@ -170,15 +174,18 @@ class MediaClient {
     } catch (error) {
       if (error.localRouteMissing) throw error;
       const phase = path.startsWith('/v1/media/generate') ? '提交生图任务' : path.startsWith('/v1/media/status') ? '查询原任务' : '检查连接';
+      if (error.sizeRejected || error.localRouteMissing) throw error;
       if (/network|fetch|abort|timeout/i.test(error.message || '') || error.name === 'AbortError') {
         const failure=new Error(phase + '时网络连接失败或超时。' + (body ? '请到平台确认是否已接单，勿重复生成。' : '可再次查询，不会重复提交生图任务。'));
         failure.terminal=!!body;
+        failure.uncertain=!!body;
+        failure.sizeRejected=false;
         throw failure;
       }
       throw error;
     } finally { clearTimeout(timer); }
   }
-  async submit(model, prompt, images, params = {}) {
+  async submit(model, prompt, images, params = {}, attempt = 0) {
     if(model==='gemini-nano-banana-2.1'){
       const available=await this.models();
       const exact=available.find(item=>item.id===model);
@@ -187,7 +194,20 @@ class MediaClient {
       else if(alternatives.length===1)model=alternatives[0].id;
       else {const error=new Error('当前平台未返回可唯一确认的 Banana 2.1 模型 ID；尚未提交生图任务。请在设置中刷新平台模型。');error.terminal=true;throw error;}
     }
-    const payload = await this.request('/v1/media/generate', { model, prompt, params: { ...params, images } });
+    let payload;
+    try { payload = await this.request('/v1/media/generate', { model, prompt, params: { ...params, images } }); }
+    catch (error) {
+      if (error.taskId) return String(error.taskId);
+      if (attempt < 1 && error.sizeRejected && !error.uncertain) {
+        const fitted = fitUploadImages(images, { limits: tightenLimits(error.limits || parseSizeLimits(error.message)) });
+        if (fitted.compressed && fitted.images.some((image, index) => image !== images[index])) {
+          const again = await this.submit(model, prompt, fitted.images, params, attempt + 1);
+          if (again && typeof again === 'object') { again.note = fitted.note; return again; }
+          return { taskId: String(again), note: fitted.note };
+        }
+      }
+      throw error;
+    }
     const taskId = submissionTaskId(payload);
     const echoed = new Set((Array.isArray(images) ? images : []).filter(item => typeof item === 'string'));
     const readyImages = imageSources(payload).filter(source => !echoed.has(source));
@@ -195,8 +215,18 @@ class MediaClient {
     if (taskId) return String(taskId);
     if (readyImages.length) return { images: readyImages };
     const failure = submissionFailure(payload);
-    if (failure) throw failure;
-    throw new Error('未收到任务编号。请先到平台确认任务，避免重复计费。');
+    if (failure) {
+      if (!taskId && isExplicitSizeRejection(failure.message)) { failure.sizeRejected=true; failure.terminal=true; failure.uncertain=false; failure.limits=parseSizeLimits(failure.message); }
+      if (attempt < 1 && failure.sizeRejected) {
+        const fitted = fitUploadImages(images, { limits: tightenLimits(failure.limits) });
+        if (fitted.compressed && fitted.images.some((image, index) => image !== images[index])) return this.submit(model, prompt, fitted.images, params, attempt + 1);
+      }
+      throw failure;
+    }
+    const missing=new Error('未收到任务编号。请先到平台确认任务，避免重复计费。');
+    missing.uncertain=true;
+    missing.terminal=true;
+    throw missing;
   }
   async status(taskId) { return this.request('/v1/media/status?task_id=' + encodeURIComponent(taskId)); }
   async balance() { return this.request('/api/v1/skills/balance'); }

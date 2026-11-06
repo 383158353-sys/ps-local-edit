@@ -9,7 +9,7 @@
 <div class="mm-add"><button id="mm-add-toggle" type="button" class="mm-small">+ 手动添加</button><div id="mm-add-box" class="settings-inline" style="display:none"><input id="custom-model" placeholder="模型 ID"><sp-action-button id="add-model">添加</sp-action-button></div></div>
 <div class="mm-misc"><sp-checkbox id="reset-confirm">已在平台确认旧任务，可以结束记录</sp-checkbox><sp-action-button id="restore-result">上次结果</sp-action-button><sp-action-button id="reset-job">结束当前任务记录</sp-action-button></div></section>
 <section id="editor">
-<div id="selection-gate" class="gate"><p id="selection-hint">选区是可选的：读取选区可做局部改图；也可直接上传图片或输入提示词生成。</p><sp-button id="capture-selection">局部改图 · 读取选区</sp-button></div>
+<div id="selection-gate" class="gate"><p id="selection-hint">选区是可选的：读取选区可做局部改图；也可直接上传图片或输入提示词生成。</p><button id="capture-selection" type="button">局部改图 · 读取选区</button></div>
 
 <div id="native-inputs"><div id="images-row" class="images-row"><div class="thumb" id="preview-box"><span class="badge">1</span><img id="preview" alt="选区参考图"><span id="selection-size" class="hint">尚未读取选区</span><span id="annotate-source" class="annotate-reference preview-edit" title="标注选区图" role="button" tabindex="0" aria-label="标注选区图" style="display:none">✎</span></div><div id="reference-thumbs" class="references"></div><div id="dropzone" class="dropzone"><sp-action-button id="add-reference" quiet>＋ 添加图片</sp-action-button><sp-action-button id="paste-reference" quiet>粘贴图片</sp-action-button><span class="hint">拖入图片新增</span></div></div>
 <p id="reference-label" style="display:none"></p><sp-action-button id="clear-reference" quiet style="display:none">清空参考图</sp-action-button>

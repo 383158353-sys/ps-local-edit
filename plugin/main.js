@@ -263,6 +263,16 @@ function renderTasks(){
  if(record.state==='submitting'||record.tasks?.some(t=>t.state==='running'))notice((record.phase||'生成中')+'，可继续操作；完成后回到历史查看。');
  if(record.prepareNote)notice(record.prepareNote,false);
  if(record.error)notice(record.error,true);
+ if(record.chargeState==='uncertain'){
+  const release=document.createElement('button');
+  release.type='button';
+  release.textContent='已确认平台没有此任务，解除保护';
+  release.onclick=()=>{
+   if(!$('reset-confirm').checked){status('原提交状态不允许解除保护。请先到平台确认没有此任务，再勾选确认项。',true);return;}
+   record.chargeState='cleared';record.state='failed';queue.save();status('已解除保护。平台若没有此任务，可以再次生成。');tasksUI();
+  };
+  root.appendChild(release);
+ } else if(record.chargeState==='rejected') notice('平台未接单，可以再次生成。',false);
  let total=0;
  (record.tasks||[]).forEach(task=>{
   if(task.error)notice(task.error,true);
@@ -433,6 +443,7 @@ async function candidateAction(data){const record=queue.jobs.find(j=>j.id===data
  await ps.placeBack('editableSo',fs.createSessionToken(file),region.bounds,region.maskData,{...LOCAL_EDIT_EDGE_FEATHER,skipImageBlur:true});result.imported=true;queue.save();status('已添加此图片为独立图层；蒙版边缘轻微向选区内羽化，不会扩出原选区。');
 }
 function boundsNumber(value){const raw=value&&typeof value==='object'&&'_value' in value?value._value:value;const number=Number(raw);return Number.isFinite(number)?number:null;}
+function releasePixels(image){if(image&&typeof image.dispose==='function'){try{image.dispose();}catch(_){}}}
 function refitMask(mask,fromBounds,toBounds){
  const srcW=mask.width|0,srcH=mask.height|0,dstW=toBounds.width|0,dstH=toBounds.height|0,src=mask.imageData;
  if(!(srcW>0)||!(srcH>0)||!(dstW>0)||!(dstH>0)||!src||src.length<srcW*srcH)return mask;
@@ -464,6 +475,9 @@ function useCapturedPixels(nextCapture){
 async function readSelection(aspectOverride, preserveCurrent = false) {
   const epoch=++selectionEpoch;
   status('正在读取选区…');
+  if($('selection-size'))$('selection-size').textContent='正在读取选区…';
+  // Yield once so the status line paints before Photoshop enters a modal
+  // and stops updating this panel.
   await new Promise(resolve=>setTimeout(resolve,0));
   if(epoch!==selectionEpoch)return;
   try{voice.cancel();}catch(_){}
@@ -480,15 +494,23 @@ async function readSelection(aspectOverride, preserveCurrent = false) {
   if(!selectionBounds||!(selectionBounds.width>0)||!(selectionBounds.height>0))throw new Error('请先在 PS 用框选或套索圈出区域。');
   const configuredRatio=$('output-size').value||'original';
   const aspectRatio=aspectOverride||(configuredRatio==='original'?closestStandardAspect(selectionBounds.width,selectionBounds.height):configuredRatio);
+  // The previous frame still owns an imaging slot until it is disposed.
+  // getSelection/getPixels will wait forever if that slot is still taken.
+  releasePixels(capture?.imageData?.imageData);
   const nextCapture = await ps.captureSelection('copyMerged', false, false, {tight:true,padding:8,aspectRatio,selectionBounds});
-  if(epoch!==selectionEpoch)return;
+  if(epoch!==selectionEpoch){releasePixels(nextCapture?.imageData?.imageData);return;}
   nextCapture.aspectRatio=aspectRatio;
   nextCapture.aspectRatioMatched=nextCapture.aspectRatioMatched!==false;
   nextCapture.documentWidth = documentWidth; nextCapture.documentHeight = documentHeight;
-  const imageData = useCapturedPixels(nextCapture);
-  const pixels=await imageData.getData({chunky:true});
+  let imageData;
+  try{imageData=useCapturedPixels(nextCapture);}
+  catch(error){releasePixels(nextCapture?.imageData?.imageData);throw error;}
+  const pixelWidth=imageData.width, pixelHeight=imageData.height, pixelComponents=imageData.components;
+  let pixels;
+  try{pixels=await imageData.getData({chunky:true});}
+  finally{releasePixels(imageData);}
   if(epoch!==selectionEpoch)return;
-  const encoded=pngRGBA(imageData.width,imageData.height,pixels,imageData.components);
+  const encoded=pngRGBA(pixelWidth,pixelHeight,pixels,pixelComponents);
   const image='data:image/png;base64,'+fileUtils.arrayBufferToBase64(encoded);
   // A completed task keeps its original capture for later result placement.
   // Continue in a fresh draft on the same editor, carrying all user inputs forward.
@@ -516,7 +538,7 @@ async function readSelection(aspectOverride, preserveCurrent = false) {
   show('selection-gate', false);
   show('preview-box',true);
   $('preview').src = image;
-  $('selection-size').textContent = imageData.width + ' × ' + imageData.height + ' · ' + aspectRatio;
+  $('selection-size').textContent = pixelWidth + ' × ' + pixelHeight + ' · ' + aspectRatio;
   syncInputs();
   status(capture.aspectRatioMatched?'已读取选区。参考图按最近模型比例补入上下文，回填仍由原套索蒙版限制。':'画布空间不足以使用所选模型比例，将按原选区范围生成。');
   try{await saveCurrent();}catch(error){status('已读取选区，但保存草稿失败：'+(error.message||error),true);}
@@ -543,9 +565,21 @@ function bindPress(id,handler){
   node.addEventListener('pointerup',event=>{if(event&&event.button!=null&&event.button!==0)return;pointerStamp=Date.now();return run();});
   node.addEventListener('click',()=>{if(Date.now()-pointerStamp<400)return;return run();});
 }
+// Plain click, same as 设置 and 历史记录. The old control was an sp-button
+// on bindPress: a non-primary pointerup is ignored, and click does not
+// always follow, so the read never started and the status line stayed idle.
+function bindClick(id,handler){
+  const node=$(id);
+  if(!node||node.__lkClick)return;
+  node.__lkClick=true;
+  node.addEventListener('click',event=>{
+    if(event&&event.button!=null&&event.button!==0)return;
+    return Promise.resolve().then(handler).catch(error=>status((error&&error.message)||'操作失败，请检查设置后重试。',true));
+  });
+}
 function bindCriticalActions(){
-  bindPress('capture-selection',()=>requestSelectionRead());
-  bindPress('refresh-selection',()=>requestSelectionRead());
+  bindClick('capture-selection',()=>requestSelectionRead());
+  bindClick('refresh-selection',()=>requestSelectionRead());
   bindPress('reload-panel',()=>reloadPanel());
   bindPress('generate',()=>withBusy(generate));
 }
@@ -770,6 +804,21 @@ function dragPoint(event){
   const x=Number(event&&event.screenX),y=Number(event&&event.screenY),point={};
   if(Number.isFinite(x))point.x=x;
   if(Number.isFinite(y))point.y=y;
+  // CSS screen pixels match a DPI-unaware WinForms window. Send the in-panel
+  // dropzone rectangle so the catch layer sits on 「添加图片」, not the desktop.
+  const zone=$('dropzone');
+  const rect=zone&&typeof zone.getBoundingClientRect==='function'?zone.getBoundingClientRect():null;
+  if(!rect||!(rect.width>=40)||!(rect.height>=40)||rect.width>280||rect.height>280)return point;
+  const clientX=Number(event&&event.clientX),clientY=Number(event&&event.clientY);
+  let originX=Number.isFinite(x)&&Number.isFinite(clientX)?x-clientX:NaN;
+  let originY=Number.isFinite(y)&&Number.isFinite(clientY)?y-clientY:NaN;
+  if(!Number.isFinite(originX)&&typeof window!=='undefined')originX=Number(window.screenX);
+  if(!Number.isFinite(originY)&&typeof window!=='undefined')originY=Number(window.screenY);
+  if(!Number.isFinite(originX)||!Number.isFinite(originY))return point;
+  point.left=Math.round(originX+rect.left);
+  point.top=Math.round(originY+rect.top);
+  point.width=Math.round(rect.width);
+  point.height=Math.round(rect.height);
   return point;
 }
 function releaseDropOverlay(){
@@ -779,30 +828,33 @@ function releaseDropOverlay(){
   if(armed)voice.request('/drop/hide','POST').catch(()=>{});
 }
 function prewarmDropOverlay(){voice.request('/drop/arm','POST').catch(()=>{});}
+function dropGraceMs(){const override=typeof globalThis!=='undefined'?Number(globalThis.__lk888DropGraceMs):NaN;return override>0?override:3500;}
+async function takeDroppedReferences(arm,images){
+  if(!images.length)return false;
+  arm.done=true;
+  if(arm.jobId!==selectedJobId){status('拖入的图片所属编辑已切换，未加入当前参考图。',true);return true;}
+  await addReferencePayloads(images,arm.target||null);
+  voice.request('/drop/hide','POST').catch(()=>{});
+  return true;
+}
 async function pollArmedDrop(arm){
   const expires=arm.at+8000;
   while(arm.token===dropPollToken&&!arm.done&&Date.now()<expires){
     if(arm.expecting&&!arm.dropAt)arm.dropAt=Date.now();
-    if(arm.dropAt&&Date.now()-arm.dropAt>3500)break;
+    if(arm.dropAt&&Date.now()-arm.dropAt>dropGraceMs())break;
     try{
       const response=await voice.request('/drop/poll?id='+encodeURIComponent(arm.id));
       if(arm.token!==dropPollToken||arm.done)return;
-      const images=Array.isArray(response?.references)?response.references:[];
-      if(images.length){
-        arm.done=true;
-        if(arm.jobId!==selectedJobId){status('拖入的图片所属编辑已切换，未加入当前参考图。',true);return;}
-        await addReferencePayloads(images,arm.target||null);
-        voice.request('/drop/hide','POST').catch(()=>{});
-        return;
-      }
+      if(await takeDroppedReferences(arm,Array.isArray(response?.references)?response.references:[]))return;
     }catch(error){
       if(arm.token!==dropPollToken||arm.done)return;
       if(dropHelperDown(error)){arm.failed=true;arm.helperDown=true;arm.done=true;if(arm.expecting)status(missDropMessage(true),true);return;}
-      if(/过期/.test(String(error&&error.message||''))){arm.done=true;if(arm.expecting)status(missDropMessage(false),true);return;}
+      if(/过期/.test(String(error&&error.message||''))){arm.done=true;if(arm.expecting)status(missDropMessage(false),true);voice.request('/drop/hide','POST').catch(()=>{});return;}
     }
     await new Promise(resolve=>setTimeout(resolve,300));
   }
-  if(arm.token===dropPollToken&&arm.expecting&&!arm.done){arm.done=true;status(arm.ready?missDropMessage(false):startingDropMessage(),true);voice.request('/drop/hide','POST').catch(()=>{});}
+  if(arm.token!==dropPollToken||arm.done||!arm.expecting)return;
+  arm.done=true;status(arm.ready?missDropMessage(false):startingDropMessage(),true);voice.request('/drop/hide','POST').catch(()=>{});
 }
 async function armDropOverlay(event){
   if(dropArm&&!dropArm.done&&Date.now()-dropArm.at<8000&&(!dropArm.failed||Date.now()-dropArm.at<1200))return;
@@ -932,7 +984,10 @@ async function init() {
   }));
   $('reset-job').addEventListener('click', () => {
     if (busy) { status('正在处理…', true); return; }
-    if (!$('reset-confirm').checked) { status('请先在平台确认原任务，再勾选设置中的确认项。', true); return; }
+    const record=queue?.jobs.find(item=>item.id===selectedJobId);
+    const protectedState=record&&(record.chargeState==='uncertain'||(record.chargeState==='accepted'&&record.state==='running'));
+    if (protectedState && !$('reset-confirm').checked) { status('原提交状态不允许解除保护。请先到平台确认没有此任务，再勾选确认项。', true); return; }
+    if (record&&record.chargeState==='uncertain') { record.chargeState='cleared'; record.state='failed'; queue.save(); }
     job = null; saveJob(); $('reset-confirm').checked = false; status('已结束本机任务记录。不会取消平台任务。'); refresh();
   });
   $('add-reference').addEventListener('click',()=>withBusy(async()=>{

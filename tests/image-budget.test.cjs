@@ -1,7 +1,7 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const {pngRGBA}=require('../plugin/png');
-const {fitUploadImages,decodeDataUrl,storedPngBytes,NOTE_JPEG,NOTE_SCALED,UPLOAD_BYTE_BUDGET}=require('../plugin/image-budget');
+const {fitUploadImages,decodeDataUrl,decodedBytes,storedPngBytes,NOTE_JPEG,NOTE_LOSSLESS,NOTE_SCALED,PER_FILE_DECODED,AGGREGATE_DECODED}=require('../plugin/image-budget');
 const {TaskQueue}=require('../plugin/task-queue');
 const {createVoiceServer}=require('../scripts/voice-server.cjs');
 const {EventEmitter}=require('node:events');
@@ -32,8 +32,9 @@ test('stored PNG byte size matches the encoder, and a 6336×2688 selection excee
   assert.equal(encoded.length,storedPngBytes(4,2,3));
   const wide=storedPngBytes(6336,2688,3);
   const urlLength=22+Math.ceil(wide/3)*4;
+  assert.ok(wide>PER_FILE_DECODED);
+  assert.ok(wide>AGGREGATE_DECODED);
   assert.ok(urlLength>50*1024*1024);
-  assert.ok(urlLength>UPLOAD_BYTE_BUDGET);
 });
 
 test('images under the upload budget stay untouched',()=>{
@@ -48,9 +49,9 @@ test('an oversized stored PNG becomes a high-quality JPEG without a false prepar
   const image=texture(96,64);
   const original=decodeDataUrl(image);
   const fitted=fitUploadImages([image],{targetBytes:image.length-1,minEdge:32});
-  assert.match(fitted.images[0],/^data:image\/jpeg;base64,/);
+  assert.notEqual(fitted.images[0],image);
   assert.ok(fitted.images[0].length<image.length);
-  assert.equal(fitted.note,NOTE_JPEG);
+  assert.match(fitted.note,new RegExp(NOTE_JPEG+'|'+NOTE_LOSSLESS));
   assert.doesNotMatch(fitted.note,/无法识别|本机助手未开启/);
   const decoded=decodeDataUrl(fitted.images[0]);
   assert.equal(decoded.width,original.width);
@@ -61,13 +62,12 @@ test('an oversized stored PNG becomes a high-quality JPEG without a false prepar
 });
 
 test('dimensions shrink only after quality alone cannot fit',()=>{
-  const image=texture(80,48);
-  const fitted=fitUploadImages([image],{targetBytes:2000,minEdge:16,overheadBytes:0});
-  assert.match(fitted.images[0],/^data:image\/jpeg;base64,/);
-  assert.ok(fitted.images[0].length<=2000);
+  const image=texture(160,96);
+  const fitted=fitUploadImages([image],{limits:{perFileDecoded:350,aggregateDecoded:350,aggregateEncoded:500},minEdge:20,overheadBytes:0});
+  assert.ok(decodedBytes(fitted.images[0])<=350);
   const decoded=decodeDataUrl(fitted.images[0]);
-  assert.ok(decoded.width<80);
-  assert.ok(decoded.width>=40);
+  assert.ok(decoded.width<160);
+  assert.ok(decoded.width>=80);
   assert.equal(fitted.note,NOTE_SCALED);
 });
 
@@ -81,8 +81,9 @@ test('a prepare size rejection still submits a budgeted copy and does not say th
   })});
   const job={id:'wide',count:1,model:'banana-2',instruction:'保留石材纹理',tasks:[]};
   await queue.submit(job,[image],{});
-  assert.match(submitted[0],/^data:image\/jpeg;base64,/);
-  assert.match(job.prepareNote,/高质量 JPEG|轻度缩小/);
+  assert.notEqual(submitted[0],image);
+  assert.ok(decodedBytes(submitted[0])<decodedBytes(image));
+  assert.match(job.prepareNote,/无损压缩|高质量 JPEG|轻度缩小/);
   assert.doesNotMatch(job.prepareNote,/本机助手未开启|无法识别/);
   assert.equal(job.tasks[0].id,'task-real');
   assert.equal(image.startsWith('data:image/png;base64,'),true);
@@ -94,17 +95,44 @@ test('the local assistant accepts a selection data URL longer than the old 14MB 
   for(let i=0;i<pixels.length;i+=4){pixels[i]=120;pixels[i+1]=110;pixels[i+2]=100;pixels[i+3]=255;}
   const image=dataUrl(pngRGBA(width,height,pixels,4));
   assert.ok(image.length>14*1024*1024);
-  assert.ok(image.length<UPLOAD_BYTE_BUDGET);
+  assert.ok(decodedBytes(image)>PER_FILE_DECODED);
   const server=createVoiceServer({spawnWorker:()=>{const child=fakeChild();setImmediate(()=>child.emit('exit',0));return child;}});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const base='http://127.0.0.1:'+server.address().port;
   try{
     const response=await fetch(base+'/images/prepare',{method:'POST',headers:{'X-PS-Local-Voice':'1','Content-Type':'application/json'},body:JSON.stringify({images:[image]})});
     const body=await response.json();
-    assert.equal(response.status,200,JSON.stringify(body));
-    assert.equal(body.images[0],image);
-    assert.equal(body.compressed,false);
-    assert.equal(body.note,'');
+    assert.equal(response.status,200,JSON.stringify(body&&body.message||body));
+    assert.notEqual(body.images[0],image);
+    assert.ok(decodedBytes(body.images[0])<=PER_FILE_DECODED);
+    assert.ok(body.compressed);
+    assert.match(body.note,/无损压缩|高质量 JPEG/);
     assert.doesNotMatch(JSON.stringify(body),/无法识别|本机助手未开启/);
+    const decoded=decodeDataUrl(body.images[0]);
+    assert.equal(decoded.width,width);
+    assert.equal(decoded.height,height);
   }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+});
+
+test('several images stay original until their decoded total crosses 14MB',()=>{
+  const one=solid(24,24,[20,30,40,255]);
+  const limits={perFileDecoded:decodedBytes(one),aggregateDecoded:decodedBytes(one)*2,aggregateEncoded:one.length*3};
+  const same=fitUploadImages([one,one],{limits,overheadBytes:0});
+  assert.equal(same.compressed,false);
+  assert.equal(same.images[0],one);
+  assert.equal(same.images[1],one);
+  const over=fitUploadImages([one,one,one],{limits,minEdge:8,overheadBytes:0});
+  assert.equal(over.compressed,true);
+  assert.ok(over.images.some(image=>image===one));
+  assert.ok(decodedBytes(over.images[0])+decodedBytes(over.images[1])+decodedBytes(over.images[2])<=limits.aggregateDecoded);
+});
+
+test('a transparent PNG is not flattened while a lossless copy still fits',()=>{
+  const pixels=new Uint8Array(16*16*4);
+  for(let i=0;i<pixels.length;i+=4){pixels[i]=10;pixels[i+1]=20;pixels[i+2]=30;pixels[i+3]=i%32?255:0;}
+  const image=dataUrl(pngRGBA(16,16,pixels,4));
+  const fitted=fitUploadImages([image],{targetBytes:image.length-1,minEdge:8,overheadBytes:0});
+  const decoded=decodeDataUrl(fitted.images[0]);
+  assert.equal(fitted.note,NOTE_LOSSLESS);
+  assert.ok([...decoded.data].some((value,index)=>index%4===3&&value===0));
 });

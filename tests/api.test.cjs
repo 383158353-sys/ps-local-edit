@@ -147,3 +147,34 @@ test('recognizes serialized result containers and alternate image fields without
  assert.deepEqual(imageSources({data:{output:JSON.stringify(['https://cdn.example/one.png']),result_urls:['https://cdn.example/two.png'],generated_images:[{src:'https://cdn.example/three.png'}]}}),['https://cdn.example/one.png','https://cdn.example/two.png','https://cdn.example/three.png']);
  assert.deepEqual(imageSources({result:'not json',url:'javascript:alert(1)',image_url:'https://user:password@cdn.example/private',base64:'bad value',error:{message:'https://cdn.example/error'}}),[]);
 });
+
+test('an explicit decoded-size rejection is retried once with a smaller copy and then keeps the task id',async()=>{
+  const {pngRGBA}=require('../plugin/png');
+  const pixels=new Uint8Array(96*64*4);
+  for(let i=0;i<pixels.length;i+=4){pixels[i]=90;pixels[i+1]=140;pixels[i+2]=200;pixels[i+3]=255;}
+  const image='data:image/png;base64,'+Buffer.from(pngRGBA(96,64,pixels,4)).toString('base64');
+  let calls=0;
+  const bodies=[];
+  const api=new MediaClient('test-key',async(_url,options)=>{
+    calls++;
+    const body=JSON.parse(options.body);
+    bodies.push(body.params.images[0]);
+    if(calls===1)return {ok:false,status:400,json:async()=>({error:{message:'字段 images[0] 的文件过大：单文件解码后不能超过 0.01MB，请压缩后重试'}})};
+    return {ok:true,status:200,json:async()=>({data:{task_id:'task-after-retry'}})};
+  });
+  const submitted=await api.submit('banana-2','保留纹理',[image]);
+  assert.equal(typeof submitted==='string'?submitted:submitted.taskId,'task-after-retry');
+  assert.equal(calls,2);
+  assert.equal(bodies[0],image);
+  assert.notEqual(bodies[1],image);
+  assert.ok(bodies[1].length<bodies[0].length);
+});
+
+test('a timeout or a response without a task id is not retried and does not invent an id',async()=>{
+  let calls=0;
+  const timeoutApi=new MediaClient('test-key',async()=>{calls++;throw new Error('network lost');});
+  await assert.rejects(timeoutApi.submit('banana-2','edit',['data:image/png;base64,YQ==']),error=>error.uncertain===true&&/勿重复生成/.test(error.message));
+  assert.equal(calls,1);
+  const emptyApi=new MediaClient('test-key',async()=>({ok:true,status:200,json:async()=>({code:200,data:{},msg:'任务创建成功'})}));
+  await assert.rejects(emptyApi.submit('banana-2','edit',[]),error=>error.uncertain===true&&/未收到任务编号/.test(error.message)&&!error.taskId);
+});

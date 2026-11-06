@@ -21,6 +21,7 @@ class TaskQueue{
    const fitted=fitUploadImages(images,{targetBytes:api&&api.uploadByteBudget});
    images=fitted.images;
    if(fitted.note)note=fitted.note;
+   else if(!note)note='图片使用原图提交。';
   }
   if(note)record.prepareNote=note;
   record.timings.preparedAt=Date.now();record.phase='上传图片，等待平台接单';
@@ -31,18 +32,22 @@ class TaskQueue{
   await Promise.all(Array.from({length:record.count},async(_,index)=>{
    try{
     const submitted=await api.submit(record.model,record.instruction,images,params);
-    if(submitted&&typeof submitted==='object'&&Array.isArray(submitted.images)&&submitted.images.length){
-     const id=submitted.taskId?String(submitted.taskId):'local-sync-'+record.id+'-'+index;
-     record.tasks.push({id,state:'ready',results:submitted.images.map(source=>({source,imported:false})),outputIndex:index,immediate:!submitted.taskId});
+    if(submitted&&typeof submitted==='object'){
+     if(submitted.note)record.prepareNote=submitted.note;
+     if(Array.isArray(submitted.images)&&submitted.images.length){
+      const id=submitted.taskId?String(submitted.taskId):'local-sync-'+record.id+'-'+index;
+      record.tasks.push({id,state:'ready',results:submitted.images.map(source=>({source,imported:false})),outputIndex:index,immediate:!submitted.taskId});
+     }else record.tasks.push({id:String(submitted.taskId),state:'running',results:[],outputIndex:index});
     }else record.tasks.push({id:String(submitted),state:'running',results:[],outputIndex:index});
+    record.chargeState='accepted';
    }
-   catch(e){failures.push(e);record.error=e.message;}
+   catch(e){failures.push(e);record.error=e.message;if(e&&e.uncertain)record.chargeState='uncertain';else record.chargeState='rejected';}
    finally{record.pendingSubmissions--;record.phase='已接单 '+record.tasks.length+'/'+record.count+'，待响应 '+record.pendingSubmissions;this.save();}
   }));
   record.tasks.sort((a,b)=>a.outputIndex-b.outputIndex);
   record.timings.acceptedAt=Date.now();
-  if(failures.length){record.error=[...new Set(failures.map(e=>e&&e.message).filter(Boolean))].join('；')||'生成提交失败。';record.state=record.tasks.some(t=>t.state==='running')?'running':'failed';record.phase=record.state==='running'?'部分已接单，其余提交失败':'提交失败';}
-  else{record.phase='平台生成中';record.state=record.tasks.every(t=>t.state==='ready')?'ready':record.tasks.some(t=>t.state==='running')?'running':'failed';}
+  if(failures.length){record.error=[...new Set(failures.map(e=>e&&e.message).filter(Boolean))].join('；')||'生成提交失败。';const uncertain=failures.some(e=>e&&e.uncertain)&&!record.tasks.some(t=>t.state==='running');record.chargeState=uncertain?'uncertain':(record.tasks.length?'accepted':'rejected');record.state=record.tasks.some(t=>t.state==='running')?'running':uncertain?'uncertain':'failed';record.phase=record.state==='running'?'部分已接单，其余提交失败':uncertain?'提交状态不确定，请到平台确认，勿重复生成':'提交失败';}
+  else{record.chargeState='accepted';record.phase='平台生成中';record.state=record.tasks.every(t=>t.state==='ready')?'ready':record.tasks.some(t=>t.state==='running')?'running':'failed';}
   this.save();
  }
  async tick(){await Promise.all(this.jobs.flatMap(job=>job.tasks.filter(task=>task.state==='running').map(task=>this.query(job,task))));}

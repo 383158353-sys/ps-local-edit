@@ -2,11 +2,14 @@
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+# HttpWebRequest and Invoke-RestMethod otherwise follow the system proxy and
+# never reach the loopback helper.
+[System.Net.WebRequest]::DefaultWebProxy = $null
 [System.Windows.Forms.Application]::EnableVisualStyles()
 Add-Type -Namespace LocalEdit -Name WindowVisibility -MemberDefinition '[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr handle, int command); [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr handle);'
 $form=New-Object System.Windows.Forms.Form
 $form.Text='局部改图 · 拖入图片'
-$form.Size=New-Object System.Drawing.Size(390,245)
+$form.Size=New-Object System.Drawing.Size(390,320)
 $form.StartPosition='CenterScreen'
 $form.TopMost=$true
 $form.ShowInTaskbar=$true
@@ -28,6 +31,12 @@ $paste.Dock='Bottom'
 $paste.Height=40
 $paste.Font=New-Object System.Drawing.Font('Microsoft YaHei',10)
 $form.Controls.Add($paste)
+$pick=New-Object System.Windows.Forms.Button
+$pick.Text='选择图片文件'
+$pick.Dock='Bottom'
+$pick.Height=40
+$pick.Font=New-Object System.Drawing.Font('Microsoft YaHei',10)
+$form.Controls.Add($pick)
 function Submit-References($refs){
     if(-not $refs -or $refs.Count -eq 0){throw '请拖入或复制 PNG、JPG、WebP 图片。'}
     $body=[System.Text.Encoding]::UTF8.GetBytes((@{references=$refs}|ConvertTo-Json -Depth 5 -Compress))
@@ -68,6 +77,18 @@ $onPaste={
   }catch{$label.Text=$_.Exception.Message}
 }
 $paste.Add_Click($onPaste)
+$pick.Add_Click({
+  try{
+    $dialog=New-Object System.Windows.Forms.OpenFileDialog
+    $dialog.Title='选择参考图片'
+    $dialog.Filter='图片|*.png;*.jpg;*.jpeg;*.webp'
+    $dialog.Multiselect=$true
+    if($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK){return}
+    $refs=@()
+    foreach($file in @($dialog.FileNames) | Select-Object -First 5){$refs+=Reference-FromFile ([string]$file)}
+    Submit-References $refs
+  }catch{$label.Text=$_.Exception.Message}
+})
 $form.Add_KeyDown({param($sender,$e) if($e.Control -and $e.KeyCode -eq [System.Windows.Forms.Keys]::V){$e.SuppressKeyPress=$true;& $onPaste}})
 $form.add_DragEnter($onEnter)
 $form.add_DragDrop($onDrop)
