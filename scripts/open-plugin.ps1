@@ -41,7 +41,7 @@ try {
         }
     }
     if (-not (Test-TaskService 17402)) { Write-Warning '本机助手未启动。添加图片仍可用 Photoshop 的文件选择；剪贴板和带路径的拖入需要助手。' }
-    else { Write-Host '本机助手已在 127.0.0.1:17402。不启动蓝色接图层。点「添加图片」选文件；拖到「添加图片」区域时，面板能读到的文件会直接加入。' }
+    else { Write-Host '本机助手已在 127.0.0.1:17402。拖过「添加图片」时只盖住那一块来接资源管理器，平时不显示，也不铺蓝层。点「添加图片」仍是 Photoshop 文件选择。' }
     & $taskNode $taskCli plugin load --manifest (Join-Path $taskRoot 'plugin\manifest.json') --apps PS
     if ($LASTEXITCODE -ne 0) { throw '插件加载失败，请确认 PS 已打开且启用了开发者模式。' }
     Write-Host '已加载插件。在 Photoshop「增效工具」菜单打开「局部改图」。'

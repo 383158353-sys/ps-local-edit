@@ -97,6 +97,11 @@ test('voice session reports microphone level and distinguishes silence from reje
   } finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
 test('the assistant does not launch a visible drop layer, and pick-images is not a route',async()=>{
+  const overlay=fs.readFileSync('scripts/drop-overlay.ps1','utf8');
+  assert.match(overlay,/Do not set Form\.Opacity/);
+  assert.match(overlay,/offsetX/);
+  assert.doesNotMatch(overlay,/松手添加|FromArgb\(138, 180, 255\)|232, 224/);
+  assert.match(fs.readFileSync('scripts/voice-server.cjs','utf8'),/server\.ensureOverlay\(\)/);
   assert.doesNotMatch(fs.readFileSync('scripts/voice-server.cjs','utf8'),/listen\(PORT,'127\.0\.0\.1',\(\)=>\{try\{server\.ensureOverlay/);
   assert.doesNotMatch(fs.readFileSync('plugin/main.js','utf8'),/voice\.request\('\/pick-images'/);
   const overlays=[];
@@ -113,6 +118,25 @@ test('the assistant does not launch a visible drop layer, and pick-images is not
       assert.equal(missing.status,404);
       assert.match((await missing.json()).message,/没有这个接口/);
     }
+  }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+});
+test('drop trace stores counts only and does not open a catch window',async()=>{
+  const overlays=[];
+  const server=createVoiceServer({spawnWorker:()=>{const child=fakeChild();setImmediate(()=>child.emit('exit',0));return child;},overlayLauncher:()=>{overlays.push('overlay');return fakeChild();},dropWindowLauncher:()=>{overlays.push('window');return fakeChild();}});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const base='http://127.0.0.1:'+server.address().port,headers={'X-PS-Local-Voice':'1','Content-Type':'application/json'};
+  try{
+    const ok=await fetch(base+'/drop/trace',{method:'POST',headers,body:JSON.stringify({files:0,items:0,entries:1,paths:1,readable:0,types:['Files'],accepted:true})});
+    assert.equal(ok.status,200);
+    const listed=await(await fetch(base+'/drop/trace',{headers:{'X-PS-Local-Voice':'1'}})).json();
+    assert.equal(listed.traces.length,1);
+    assert.equal(listed.traces[0].entries,1);
+    assert.equal(listed.traces[0].accepted,true);
+    assert.equal(JSON.stringify(listed).includes('C:\\\\'),false);
+    const leaked=await fetch(base+'/drop/trace',{method:'POST',headers,body:JSON.stringify({files:0,items:0,entries:0,paths:1,readable:0,types:['Files'],accepted:false,path:'C:\\\\secret\\\\a.png'})});
+    assert.equal(leaked.status,400);
+    assert.deepEqual(overlays,[]);
+    assert.equal((await(await fetch(base+'/drop/overlay',{headers:{'X-PS-Local-Voice':'1'}})).json()).action,'idle');
   }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
 test('health and image prepare succeed on the local assistant',async()=>{
@@ -191,9 +215,9 @@ test('drop cover wakes a waiting overlay with the cursor hint and no dialog',asy
   try{
     const pending=fetch(base+'/drop/overlay?wait=1&since=0',{headers});
     await new Promise(resolve=>setTimeout(resolve,40));
-    const covered=await(await fetch(base+'/drop/cover',{method:'POST',headers,body:JSON.stringify({x:11,y:22,left:30,top:40,width:104,height:96})})).json();
+    const covered=await(await fetch(base+'/drop/cover',{method:'POST',headers,body:JSON.stringify({x:11,y:22,left:30,top:40,width:160,height:72,offsetX:30,offsetY:15})})).json();
     const shown=await Promise.race([pending.then(response=>response.json()),new Promise((_,reject)=>setTimeout(()=>reject(new Error('overlay wait timed out')),1000))]);
-    assert.equal(shown.action,'show');assert.equal(shown.id,covered.id);assert.equal(shown.x,11);assert.equal(shown.y,22);assert.equal(shown.left,30);assert.equal(shown.top,40);assert.equal(shown.width,104);assert.equal(shown.height,96);assert.equal(shown.ready,false);
+    assert.equal(shown.action,'show');assert.equal(shown.id,covered.id);assert.equal(shown.x,11);assert.equal(shown.y,22);assert.equal(shown.left,30);assert.equal(shown.top,40);assert.equal(shown.width,160);assert.equal(shown.height,72);assert.equal(shown.offsetX,30);assert.equal(shown.offsetY,15);assert.equal(shown.ready,false);
     assert.equal(windows.length,0);
     assert.equal((await(await fetch(base+'/drop/ready',{method:'POST',headers})).json()).state,'ready');
     assert.equal((await(await fetch(base+'/drop/overlay',{headers})).json()).ready,true);

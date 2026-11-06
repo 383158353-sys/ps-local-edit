@@ -27,7 +27,7 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
     if(url.includes('127.0.0.1:17402/drop/read')){helperCalls.push({url,options});const body=JSON.parse(options.body||'{}');const references=(Array.isArray(body.paths)?body.paths:[]).map(item=>({name:String(item).split(/[/\\]/).pop(),data:'data:image/png;base64,YWJj'}));return {ok:true,json:async()=>({references})};}
     if(url.includes('127.0.0.1:17402/drop/poll')){helperCalls.push({url,options});const references=dropQueue?dropQueue.shift()||[]:[];return {ok:true,json:async()=>({references})};}
     if(url.includes('127.0.0.1:17402/drop/arm')||url.includes('127.0.0.1:17402/drop/hide')){helperCalls.push({url,options});return {ok:true,json:async()=>({state:'ready'})};}
-    if(url.includes('127.0.0.1:17402/drop/cover')||url.includes('127.0.0.1:17402/drop/open')){helperCalls.push({url,options});return {ok:true,json:async()=>({id:'test-drop'})};}
+    if(url.includes('127.0.0.1:17402/drop/cover')||url.includes('127.0.0.1:17402/drop/open')){helperCalls.push({url,options});return {ok:true,json:async()=>({id:'test-drop',ready:true})};}
     if(url.includes('127.0.0.1:17402/drop/')){helperCalls.push({url,options});return {ok:true,json:async()=>({state:'ok'})};}
     if (url.endsWith('/generate')) { requests.push(JSON.parse(options.body)); if (submissionMessage) return { ok:false, status:400, json:async()=>({error:{message:submissionMessage}}) }; if (submissionFails) throw new Error('connection lost'); return { ok: true, json: async () => ({ task_id: requests.length===1?'existing-task':'task-'+requests.length }) }; }
     if (switchDocument) app.activeDocument = { ...originalDoc, id: 99, path:'C:/project/other.psd' };
@@ -60,9 +60,9 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
 
 
 test('selection uses lossless PNG and does not submit a task',async()=>{const h=harness();await h.ready();await h.nodes['capture-selection'].click();assert.match(h.nodes.preview.src,/^data:image\/png/);assert.equal(h.requests.length,0);});
-test('loading the panel does not arm a drop overlay',async()=>{
+test('loading the panel does not show a drop window',async()=>{
  const h=harness();await h.ready();
- assert.ok(!h.helperCalls.some(call=>/\/drop\/(arm|cover|open)/.test(call.url)));
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(cover|open)/.test(call.url)));
 });
 test('add image uses the Photoshop file picker for several files and a bad type does not lock the panel',async()=>{
  const h=harness({pickedFiles:[{name:'中文 图.png',read:async()=>Uint8Array.from([1,2,3]).buffer},{name:'second.jpg',read:async()=>Uint8Array.from([4]).buffer},{name:'notes.txt',read:async()=>Uint8Array.from([7]).buffer}]});
@@ -151,20 +151,58 @@ test('dropping UXP and browser files adds numbered reference images',async()=>{
  assert.equal(tiles[1].children[0].textContent,'2');
  assert.equal(tiles[0].children[2].textContent,'第一张.png');
  assert.equal(tiles[1].children[2].textContent,'第二张.jpg');
- assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/')));
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(?!trace)/.test(call.url)));
  await h.nodes['capture-selection'].click();
  assert.equal(h.nodes['reference-thumbs'].children.length,2);
 });
-test('an empty explorer drag does not start a catch layer',async()=>{
- const h=harness({dropQueue:[[{name:'拖入.png',data:'data:image/png;base64,YWJj'}]]});await h.ready();
+test('an Explorer drop the panel cannot read is imported from the add-area catch',async()=>{
+ const h=harness({dropGraceMs:2000,dropQueue:[[{name:'资源管理器.png',data:'data:image/png;base64,YWJj'}]]});
+ await h.ready();
+ h.nodes.dropzone.getBoundingClientRect=()=>({left:10,top:20,width:160,height:72});
+ h.nodes.dropzone.dragenter({preventDefault(){},currentTarget:h.nodes.dropzone,clientX:40,clientY:35,screenX:400,screenY:300,dataTransfer:{types:['Files'],files:[],items:[]}});
+ h.nodes.dropzone.drop({preventDefault(){},stopPropagation(){},target:h.nodes.dropzone,currentTarget:h.nodes.dropzone,dataTransfer:{types:['Files'],files:[],items:[]}});
+ for(let i=0;i<40&&!h.nodes['reference-thumbs'].children.length;i++)await new Promise(resolve=>setTimeout(resolve,50));
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'资源管理器.png');
+ const cover=h.helperCalls.find(call=>call.url.includes('/drop/cover'));
+ const body=JSON.parse(cover.options.body);
+ assert.equal(body.width,160);
+ assert.equal(body.height,72);
+ assert.equal(body.offsetX,30);
+ assert.equal(body.offsetY,15);
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/open|\/clipboard/.test(call.url)));
+ assert.match(h.nodes.status.textContent,/已添加/);
+ assert.doesNotMatch(h.nodes.status.textContent,/没有读到拖入的图片|停一下再松开|接图层还在启动|松手添加/);
+ assert.equal(h.nodes.generate.disabled,false);
+});
+test('an add-area catch during generation adds the image and does not resubmit',async()=>{
+ const h=harness({dropGraceMs:2000,dropQueue:[[{name:'生成中拖入.png',data:'data:image/png;base64,YWJj'}]]});
+ await h.ready();
+ h.nodes.prompt.value='生成中仍可拖图';
+ await h.nodes.generate.click();await h.ready();
+ const before=h.requests.length;
+ const job=JSON.parse(h.local.get('lk888-jobs'))[0];
+ h.nodes.dropzone.getBoundingClientRect=()=>({left:10,top:20,width:160,height:72});
+ h.nodes.dropzone.dragenter({preventDefault(){},currentTarget:h.nodes.dropzone,clientX:40,clientY:30,screenX:200,screenY:200,dataTransfer:{types:['Files'],files:[],items:[]}});
+ h.nodes.dropzone.drop({preventDefault(){},stopPropagation(){},target:h.nodes.dropzone,dataTransfer:{types:['Files'],files:[],items:[]}});
+ for(let i=0;i<40&&!(h.nodes['reference-thumbs'].children[0]&&h.nodes['reference-thumbs'].children[0].children[2].textContent==='生成中拖入.png');i++)await new Promise(resolve=>setTimeout(resolve,50));
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'生成中拖入.png');
+ assert.equal(h.requests.length,before);
+ const after=JSON.parse(h.local.get('lk888-jobs'))[0];
+ assert.equal(after.id,job.id);
+ assert.equal(after.tasks.length,job.tasks.length);
+ assert.equal(after.tasks[0].id,job.tasks[0].id);
+ assert.equal(after.chargeState,job.chargeState);
+ assert.notEqual(after.chargeState,'cleared');
+});
+test('a drag outside the add-image area does not raise a catch window',async()=>{
+ const h=harness();await h.ready();
  const before=h.helperCalls.length;
  h.nodes['images-row'].dragenter({preventDefault(){},screenX:320,screenY:240,dataTransfer:{types:['Files'],files:[],items:[]}});
- await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
+ await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},target:h.nodes['images-row'],dataTransfer:{files:[],items:[]}});
  await h.ready();
  assert.equal(h.nodes['reference-thumbs'].children.length,0);
- assert.ok(!h.helperCalls.slice(before).some(call=>/\/drop\/(cover|arm|open|poll)/.test(call.url)));
- assert.match(h.nodes.status.textContent,/请点「添加图片」/);
- assert.doesNotMatch(h.nodes.status.textContent,/接图层还在启动|蓝色|局部改图 · 拖入/);
+ assert.ok(!h.helperCalls.slice(before).some(call=>/\/drop\/(cover|open|poll)/.test(call.url)));
+ assert.doesNotMatch((h.nodes.status&&h.nodes.status.textContent)||'',/已添加|没有读到拖入的图片|停一下再松开/);
  assert.equal(h.nodes.generate.disabled,false);
 });
 test('a file dropped on the add-image area is imported without an overlay',async()=>{
@@ -172,31 +210,34 @@ test('a file dropped on the add-image area is imported without an overlay',async
  await h.nodes.dropzone.drop({preventDefault(){},stopPropagation(){},target:h.nodes.dropzone,dataTransfer:{files:[{name:'窗口.jpg',size:3,arrayBuffer:async()=>Uint8Array.from([4,5,6]).buffer}]}});
  await h.ready();
  assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'窗口.jpg');
- assert.ok(!h.helperCalls.some(call=>/\/drop\/(cover|arm|open)/.test(call.url)));
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(cover|open)/.test(call.url)));
 });
 test('a drop elsewhere on the panel still accepts file bytes and does not cover the screen',async()=>{
  const h=harness();await h.ready();
  await h.docEvents.drop({preventDefault(){},stopPropagation(){},target:h.nodes.status,dataTransfer:{files:[{name:'拖入.png',size:1,arrayBuffer:async()=>Uint8Array.from([1]).buffer}]}});
  await h.ready();
  assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'拖入.png');
- assert.ok(!h.helperCalls.some(call=>/\/drop\/(cover|arm|open)/.test(call.url)));
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(cover|open)/.test(call.url)));
 });
-test('an empty drag is not described as a starting catch layer',async()=>{
- const h=harness();await h.ready();
- await h.nodes.dropzone.drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
- await h.ready();
+test('the add area reports a miss without asking for another drag or opening a dialog',async()=>{
+ const h=harness({dropGraceMs:350});await h.ready();
+ h.nodes.dropzone.getBoundingClientRect=()=>({left:8,top:8,width:120,height:64});
+ h.nodes.dropzone.dragenter({preventDefault(){},currentTarget:h.nodes.dropzone,clientX:20,clientY:18,screenX:100,screenY:80,dataTransfer:{types:['Files'],files:[],items:[]}});
+ h.nodes.dropzone.drop({preventDefault(){},stopPropagation(){},target:h.nodes.dropzone,currentTarget:h.nodes.dropzone,dataTransfer:{files:[],items:[]}});
+ for(let i=0;i<30&&!/添加图片区域没有接到/.test((h.nodes.status&&h.nodes.status.textContent)||'');i++)await new Promise(resolve=>setTimeout(resolve,50));
  assert.equal(h.nodes['reference-thumbs'].children.length,0);
- assert.match(h.nodes.status.textContent,/请点「添加图片」/);
- assert.doesNotMatch(h.nodes.status.textContent,/接图层还在启动|拖入接图层/);
- assert.ok(!h.helperCalls.some(call=>/\/drop\/(cover|arm|open)/.test(call.url)));
+ assert.match(h.nodes.status.textContent,/添加图片区域没有接到这次拖放的文件/);
+ assert.doesNotMatch(h.nodes.status.textContent,/停一下再松开|接图层还在启动|松手添加|请点「添加图片」/);
+ assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/cover')));
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/open|\/clipboard/.test(call.url)));
+ assert.equal(h.nodes.generate.disabled,false);
 });
-test('an empty drop with no drag does not open a dialog',async()=>{
+test('an empty drop outside the add area does not open a dialog',async()=>{
  const h=harness();await h.ready();
- await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
+ await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},target:h.nodes['images-row'],dataTransfer:{files:[],items:[]}});
  assert.equal(h.nodes['reference-thumbs'].children.length,0);
  assert.ok(!h.helperCalls.some(call=>/\/drop\/(open|cover)/.test(call.url)));
- assert.match(h.nodes.status.textContent,/请点「添加图片」/);
- assert.doesNotMatch(h.nodes.status.textContent,/该来源没有提供可读取的图片|语音会话/);
+ assert.doesNotMatch((h.nodes.status&&h.nodes.status.textContent)||'',/已添加|该来源没有提供可读取的图片|语音会话|停一下再松开/);
 });
 test('a nameless PNG or JPEG is recognized from its bytes',async()=>{
  const h=harness();await h.ready();
@@ -221,9 +262,9 @@ test('a file the panel cannot read and that has no path asks for the file picker
  const h=harness({dropQueue:[[{name:'拖入.png',data:'data:image/png;base64,YWJj'}]]});await h.ready();
  await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[{name:'微信图片.png',size:1,arrayBuffer:async()=>{throw new Error('access denied');}}]}});
  await h.ready();
- assert.ok(!h.helperCalls.some(call=>/\/drop\/(cover|arm|open|read)/.test(call.url)));
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(cover|open|read)/.test(call.url)));
  assert.equal(h.nodes['reference-thumbs'].children.length,0);
- assert.match(h.nodes.status.textContent,/请点「添加图片」/);
+ assert.match(h.nodes.status.textContent,/无法读取/);
  assert.equal(h.nodes.generate.disabled,false);
 });
 test('Explorer file URL is captured before the drop transfer is cleared and read without the helper',async()=>{
@@ -238,7 +279,7 @@ test('Explorer file URL is captured before the drop transfer is cleared and read
  assert.equal(h.nodes['reference-thumbs'].children.length,1);
  assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'参考.png');
  assert.match(decodeURIComponent(urls[0]),/参考\.png/);
- assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/')));
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(?!trace)/.test(call.url)));
 });
 test('Explorer path is read by the local helper when UXP cannot read the dropped file',async()=>{
  const h=harness();await h.ready();
@@ -259,7 +300,7 @@ test('a file UXP can read does not call the helper even if it also has a path',a
  await h.ready();
  await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[{name:'直接.png',path:'C:\\pics\\直接.png',arrayBuffer:async()=>Uint8Array.from([4]).buffer}]}});
  assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'直接.png');
- assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/')));
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(?!trace)/.test(call.url)));
 });
 test('unreadable Explorer drop names a closed helper instead of a voice session',async()=>{
  const h=harness({helperDown:true});await h.ready();
@@ -268,15 +309,25 @@ test('unreadable Explorer drop names a closed helper instead of a voice session'
  assert.match(h.nodes.status.textContent,/本机图片拖入服务未开启/);
  assert.doesNotMatch(h.nodes.status.textContent,/语音会话|提交状态不确定/);
 });
-test('an empty drop with the helper closed does not show a voice session or a catch layer',async()=>{
+test('an empty drop outside the add area with the helper closed does not show a voice session',async()=>{
  const h=harness({helperDown:true});await h.ready();
  await h.nodes['images-row'].dragenter({preventDefault(){},dataTransfer:{types:['Files'],files:[],items:[]}});
- await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
+ await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},target:h.nodes['images-row'],dataTransfer:{files:[],items:[]}});
  await h.ready();
  assert.equal(h.nodes['reference-thumbs'].children.length,0);
- assert.match(h.nodes.status.textContent,/请点「添加图片」/);
- assert.doesNotMatch(h.nodes.status.textContent,/语音会话|接图层还在启动|提交状态不确定/);
- assert.ok(!h.helperCalls.some(call=>/\/drop\/(open|cover|arm)/.test(call.url)));
+ assert.doesNotMatch((h.nodes.status&&h.nodes.status.textContent)||'',/语音会话|接图层还在启动|提交状态不确定|已添加/);
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(open|cover)/.test(call.url)));
+});
+test('the add area names a closed helper instead of a voice session',async()=>{
+ const h=harness({helperDown:true,dropGraceMs:400});await h.ready();
+ h.nodes.dropzone.getBoundingClientRect=()=>({left:4,top:4,width:100,height:48});
+ h.nodes.dropzone.dragenter({preventDefault(){},currentTarget:h.nodes.dropzone,clientX:10,clientY:10,dataTransfer:{types:['Files'],files:[],items:[]}});
+ h.nodes.dropzone.drop({preventDefault(){},stopPropagation(){},target:h.nodes.dropzone,dataTransfer:{files:[],items:[]}});
+ for(let i=0;i<20&&!/拖入服务未开启/.test((h.nodes.status&&h.nodes.status.textContent)||'');i++)await new Promise(resolve=>setTimeout(resolve,40));
+ assert.match(h.nodes.status.textContent,/本机图片拖入服务未开启/);
+ assert.doesNotMatch(h.nodes.status.textContent,/语音会话|提交状态不确定/);
+ assert.equal(h.nodes['reference-thumbs'].children.length,0);
+ assert.equal(h.nodes.generate.disabled,false);
 });
 
 test('dropping on an occupied reference replaces only that slot; dropping on the empty slot appends',async()=>{

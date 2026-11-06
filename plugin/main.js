@@ -693,6 +693,36 @@ function captureDroppedFile(file){
   }catch(error){failed=error;}
   return {name:file.name,type:file.type,path:file.path,nativePath:file.nativePath,url:file.url,fullPath:file.fullPath,read:pending?async()=>pending:failed?async()=>{throw failed;}:typeof file.read==='function'?file.read.bind(file):undefined,arrayBuffer:pending||failed?undefined:typeof file.arrayBuffer==='function'?file.arrayBuffer.bind(file):undefined};
 }
+function listDropEntries(value){
+  if(!value)return [];
+  const out=[];
+  const push=entry=>{if(entry!=null&&out.length<32)out.push(entry);};
+  if(typeof value.length==='number'&&value.length>=0&&value.length<100000){
+    const count=Math.min(value.length,32);
+    for(let index=0;index<count;index++){
+      let entry=value[index];
+      if(entry==null&&typeof value.item==='function'){try{entry=value.item(index);}catch(_){entry=null;}}
+      push(entry);
+    }
+    if(out.length||count===0)return out;
+  }
+  try{for(const entry of Array.from(value))push(entry);}catch(_){}
+  return out;
+}
+function dropShape(transfer,locations,files){
+  const types=[];
+  for(const type of listDropEntries(transfer&&transfer.types)){
+    const text=String(type).slice(0,64);
+    if(/^[A-Za-z0-9][A-Za-z0-9.+_/\\-]{0,63}$/.test(text))types.push(text);
+  }
+  const readable=(files||[]).filter(file=>typeof file.read==='function'||typeof file.arrayBuffer==='function').length;
+  return {files:Math.min(listDropEntries(transfer&&transfer.files).length,8),items:Math.min(listDropEntries(transfer&&transfer.items).length,8),entries:Math.min(listDropEntries(transfer&&transfer.uxpEntries).length,8),paths:Math.min((locations||[]).length,8),readable:Math.min(readable,8),types:types.slice(0,8)};
+}
+async function reportDropShape(shape,accepted){
+  const record={files:shape.files,items:shape.items,entries:shape.entries,paths:shape.paths,readable:shape.readable,types:shape.types,accepted:!!accepted};
+  try{console.log('drop-trace '+JSON.stringify(record));}catch(_){}
+  try{await voice.request('/drop/trace','POST',record);}catch(_){}
+}
 // Explorer clears dataTransfer when the drop handler returns, and File.arrayBuffer()
 // often throws even though the path is still on the object. Capture both before awaiting.
 function snapshotDrop(transfer){
@@ -725,13 +755,13 @@ function snapshotDrop(transfer){
     remember(file.fullPath,file.name);
   };
   if(transfer){
-    for(const file of Array.from(transfer.files||[]))take(file);
-    for(const item of Array.from(transfer.items||[])){
+    for(const file of listDropEntries(transfer.files))take(file);
+    for(const item of listDropEntries(transfer.items)){
       if(item.kind&&item.kind!=='file')continue;
       try{take(typeof item.getAsFile==='function'?item.getAsFile():null);}catch(_){}
       try{const entry=typeof item.webkitGetAsEntry==='function'?item.webkitGetAsEntry():typeof item.getAsEntry==='function'?item.getAsEntry():null;if(entry)take(entry);}catch(_){}
     }
-    for(const entry of Array.from(transfer.uxpEntries||[]))take(entry);
+    for(const entry of listDropEntries(transfer.uxpEntries))take(entry);
   }
   for(const line of text.split(/\r?\n/)){
     const trimmed=line.trim();
@@ -744,9 +774,9 @@ function snapshotDrop(transfer){
 async function droppedFileGroups(transfer){
   const groups=[];
   if(!transfer)return groups;
-  const files=Array.from(transfer.files||[]);if(files.length)groups.push(files);
+  const files=listDropEntries(transfer.files);if(files.length)groups.push(files);
   const items=[];
-  for(const item of Array.from(transfer.items||[])){
+  for(const item of listDropEntries(transfer.items)){
     if(item.kind&&item.kind!=='file')continue;
     let file=typeof item.getAsFile==='function'?item.getAsFile():null;
     if(!file&&typeof item.getAsFileSystemHandle==='function'){
@@ -755,7 +785,7 @@ async function droppedFileGroups(transfer){
     if(file)items.push(file);
   }
   if(items.length)groups.push(items);
-  const entries=Array.from(transfer.uxpEntries||[]).filter(entry=>!entry.isFolder);
+  const entries=listDropEntries(transfer.uxpEntries).filter(entry=>!entry.isFolder);
   if(entries.length)groups.push(entries);
   if(typeof transfer.getFiles==='function'){
     try{const provided=Array.from(await transfer.getFiles()||[]);if(provided.length)groups.push(provided);}catch(_){}
@@ -796,29 +826,30 @@ async function payloadsFromLocations(locations){
 }
 let dropArm=null;
 function dropHelperDown(error){return /未开启|未连接|没有这个接口|拖入服务|助手/.test(String(error&&error.message||''));}
-function missDropMessage(helperDown){return helperDown?'本机图片拖入服务未开启。可粘贴图片，或点「添加图片」。':'这次没有读到拖入的图片。请拖到面板上停一下再松开；也可粘贴图片，或点「添加图片」。';}
-function startingDropMessage(){return '拖入接图层还在启动。请再拖一次；也可粘贴图片，或点「添加图片」。';}
-// UXP's drop often carries no file. Cover as soon as the drag enters, while the
-// button is still down, so the resident catch layer can take this same drop.
+function missDropMessage(helperDown){return helperDown?'本机图片拖入服务未开启。添加图片区域因此接不到资源管理器拖放。':'添加图片区域没有接到这次拖放的文件。';}
+function startingDropMessage(){return '添加图片区域的接图进程还没有就绪。';}
+// The catch window is the add-image box only. Anchor it with the pointer's
+// offset inside #dropzone so a wrong screen origin cannot park it elsewhere.
 function dragPoint(event){
-  const x=Number(event&&event.screenX),y=Number(event&&event.screenY),point={};
-  if(Number.isFinite(x))point.x=x;
-  if(Number.isFinite(y))point.y=y;
-  // CSS screen pixels match a DPI-unaware WinForms window. Send the in-panel
-  // dropzone rectangle so the catch layer sits on 「添加图片」, not the desktop.
+  const point={};
   const zone=$('dropzone');
   const rect=zone&&typeof zone.getBoundingClientRect==='function'?zone.getBoundingClientRect():null;
-  if(!rect||!(rect.width>=40)||!(rect.height>=40)||rect.width>280||rect.height>280)return point;
+  if(!rect)return point;
+  const width=Math.round(Number(rect.width)),height=Math.round(Number(rect.height));
+  if(!(width>=24)||!(height>=24)||width>800||height>360)return point;
+  point.width=width;
+  point.height=height;
   const clientX=Number(event&&event.clientX),clientY=Number(event&&event.clientY);
-  let originX=Number.isFinite(x)&&Number.isFinite(clientX)?x-clientX:NaN;
-  let originY=Number.isFinite(y)&&Number.isFinite(clientY)?y-clientY:NaN;
-  if(!Number.isFinite(originX)&&typeof window!=='undefined')originX=Number(window.screenX);
-  if(!Number.isFinite(originY)&&typeof window!=='undefined')originY=Number(window.screenY);
-  if(!Number.isFinite(originX)||!Number.isFinite(originY))return point;
-  point.left=Math.round(originX+rect.left);
-  point.top=Math.round(originY+rect.top);
-  point.width=Math.round(rect.width);
-  point.height=Math.round(rect.height);
+  const screenX=Number(event&&event.screenX),screenY=Number(event&&event.screenY);
+  if(Number.isFinite(clientX)&&Number.isFinite(clientY)){
+    point.offsetX=Math.round(clientX-Number(rect.left));
+    point.offsetY=Math.round(clientY-Number(rect.top));
+  }
+  if(Number.isFinite(screenX)&&Number.isFinite(screenY)){point.x=screenX;point.y=screenY;}
+  if(Number.isFinite(screenX)&&Number.isFinite(screenY)&&Number.isFinite(clientX)&&Number.isFinite(clientY)){
+    point.left=Math.round(screenX-clientX+Number(rect.left));
+    point.top=Math.round(screenY-clientY+Number(rect.top));
+  }
   return point;
 }
 function releaseDropOverlay(){
@@ -831,9 +862,10 @@ function prewarmDropOverlay(){voice.request('/drop/arm','POST').catch(()=>{});}
 function dropGraceMs(){const override=typeof globalThis!=='undefined'?Number(globalThis.__lk888DropGraceMs):NaN;return override>0?override:3500;}
 async function takeDroppedReferences(arm,images){
   if(!images.length)return false;
-  arm.done=true;
-  if(arm.jobId!==selectedJobId){status('拖入的图片所属编辑已切换，未加入当前参考图。',true);return true;}
+  if(arm.jobId!==selectedJobId){arm.done=true;status('拖入的图片所属编辑已切换，未加入当前参考图。',true);return true;}
   await addReferencePayloads(images,arm.target||null);
+  arm.accepted=true;
+  arm.done=true;
   voice.request('/drop/hide','POST').catch(()=>{});
   return true;
 }
@@ -859,7 +891,7 @@ async function pollArmedDrop(arm){
 async function armDropOverlay(event){
   if(dropArm&&!dropArm.done&&Date.now()-dropArm.at<8000&&(!dropArm.failed||Date.now()-dropArm.at<1200))return;
   const token=++dropPollToken,jobId=selectedJobId;
-  const arm={token,at:Date.now(),jobId,id:null,failed:false,helperDown:false,done:false,expecting:false,ready:false,dropAt:0,target:null};
+  const arm={token,at:Date.now(),jobId,id:null,failed:false,helperDown:false,done:false,expecting:true,ready:false,dropAt:0,target:null,zone:true,accepted:false};
   dropArm=arm;
   try{
     const opened=await voice.request('/drop/cover','POST',dragPoint(event));
@@ -882,36 +914,74 @@ function dragLooksLikeFiles(event){
   if(!list.length)return true;
   return list.some(type=>type==='files'||type.includes('file')||type==='text/uri-list'||type==='application/x-moz-file');
 }
-function unresolvedDrop(){
-  throw new Error('这次拖放没有把文件交给面板。请点「添加图片」选择，或粘贴图片。');
+function eventInDropzone(event){
+  const zone=$('dropzone');
+  if(!zone||!event)return false;
+  if(event.currentTarget===zone)return true;
+  try{const path=typeof event.composedPath==='function'?event.composedPath():[];if(path&&path.indexOf&&path.indexOf(zone)>=0)return true;}catch(_){}
+  let node=event.target;
+  for(let depth=0;node&&depth<16;depth++){
+    if(node===zone)return true;
+    node=node.parentElement||node.parentNode;
+  }
+  return false;
+}
+function uxpDragHasFiles(event){
+  const transfer=event&&event.dataTransfer;
+  if(!transfer)return false;
+  if(listDropEntries(transfer.files).length||listDropEntries(transfer.uxpEntries).length)return true;
+  return listDropEntries(transfer.items).some(item=>{
+    if(!item||(item.kind&&item.kind!=='file'))return false;
+    try{const file=typeof item.getAsFile==='function'?item.getAsFile():item;return !!(file&&(file.name||file.path||file.nativePath));}catch(_){return false;}
+  });
+}
+async function waitForZoneCatch(target){
+  const arm=dropArm;
+  if(!arm||!arm.zone)return false;
+  if(target)arm.target=target;
+  arm.expecting=true;
+  const deadline=Date.now()+dropGraceMs();
+  while(!arm.done&&!arm.accepted&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,40));
+  return !!arm.accepted;
 }
 async function addDroppedImages(payload,target = null){
   const snap=payload&&Array.isArray(payload.locations)?payload:snapshotDrop(payload);
-  if(!snap.transfer&&!snap.files.length&&!snap.locations.length&&!String(snap.text||'').trim()){unresolvedDrop(target);return;}
-  const groups=[];
-  if(snap.files.length)groups.push(snap.files);
-  for(const group of await droppedFileGroups(snap.transfer))groups.push(group);
-  for(const files of groups){if(!files.length)continue;try{await addFiles(files,target);releaseDropOverlay();return;}catch(error){if(!/无法读取|读取失败/.test(error.message||'')){releaseDropOverlay();throw error;}}}
-  const dataUrls=[];
-  for(const line of String(snap.text||'').split(/\r?\n/)){
-    const image=line.trim().match(/data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)/i);
-    if(!image)continue;
-    const buffer=fileUtils.base64ToArrayBuffer(image[2]);
-    const ext=image[1].toLowerCase()==='jpeg'?'jpg':image[1].toLowerCase();
-    dataUrls.push({name:'拖入图片.'+ext,arrayBuffer:async()=>buffer});
+  const shape=dropShape(snap.transfer,snap.locations,snap.files);
+  let accepted=false;
+  let readError=null;
+  try{
+    const groups=[];
+    if(snap.files.length)groups.push(snap.files);
+    for(const group of await droppedFileGroups(snap.transfer))groups.push(group);
+    for(const files of groups){if(!files.length)continue;try{await addFiles(files,target);releaseDropOverlay();accepted=true;return;}catch(error){readError=error;if(!/无法读取|读取失败/.test(error.message||'')){releaseDropOverlay();throw error;}}}
+    const dataUrls=[];
+    for(const line of String(snap.text||'').split(/\r?\n/)){
+      const image=line.trim().match(/data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)/i);
+      if(!image)continue;
+      const buffer=fileUtils.base64ToArrayBuffer(image[2]);
+      const ext=image[1].toLowerCase()==='jpeg'?'jpg':image[1].toLowerCase();
+      dataUrls.push({name:'拖入图片.'+ext,arrayBuffer:async()=>buffer});
+    }
+    if(dataUrls.length){await addFiles(dataUrls,target);releaseDropOverlay();accepted=true;return;}
+    const resolved=await payloadsFromLocations(snap.locations);
+    const payloads=Array.isArray(resolved)?resolved:(resolved&&resolved.payloads)||[];
+    if(payloads.length){await addReferencePayloads(payloads,target,!Array.isArray(resolved)&&resolved.truncated?' 一次最多 5 张，其余请再拖一次。':'');releaseDropOverlay();accepted=true;return;}
+    if(await waitForZoneCatch(target)){accepted=true;return;}
+    if(readError)throw readError;
+    if(dropArm&&dropArm.zone){
+      if(!dropArm.done){dropArm.done=true;status(dropArm.ready?missDropMessage(false):dropArm.helperDown?missDropMessage(true):startingDropMessage(),true);voice.request('/drop/hide','POST').catch(()=>{});}
+      return;
+    }
+  }finally{
+    await reportDropShape(shape,accepted);
   }
-  if(dataUrls.length){await addFiles(dataUrls,target);releaseDropOverlay();return;}
-  const resolved=await payloadsFromLocations(snap.locations);
-  const payloads=Array.isArray(resolved)?resolved:(resolved&&resolved.payloads)||[];
-  if(payloads.length){await addReferencePayloads(payloads,target,!Array.isArray(resolved)&&resolved.truncated?' 一次最多 5 张，其余请再拖一次。':'');releaseDropOverlay();return;}
-  unresolvedDrop();
 }
 function settingsPage(open){settingsOpen=open;navigatePage(open?'settings':'edit');}
 
 async function init() {
   bindCriticalActions();
   if (initialized) return; initialized = true;
-  if(typeof navigator!=='undefined'){voice.request('/health').then(data=>console.log('Local voice helper: '+data.state+' '+(data.language||''))).catch(()=>console.log('Local voice helper unavailable; start with the local launcher.'));}
+  if(typeof navigator!=='undefined'){voice.request('/health').then(data=>console.log('Local voice helper: '+data.state+' '+(data.language||''))).catch(()=>console.log('Local voice helper unavailable; start with the local launcher.'));prewarmDropOverlay();}
   try { job = JSON.parse(localStorage.getItem('lk888-job') || 'null'); } catch (_) {}
   if (job && !job.imported && fs.getDataFolder) {
     try {
@@ -1016,8 +1086,16 @@ async function init() {
   document.addEventListener('mousemove',moveReferenceOnPointer);
   document.addEventListener('mouseup',endReferencePointer);
   const imageRow=$('images-row'),dropzone=$('dropzone');
-  const acceptDrag=event=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='copy';dropzone.classList.add('dragging');};
+  const allowPanelDrag=event=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='copy';};
+  const armZone=event=>{
+    allowPanelDrag(event);
+    dropzone.classList.add('dragging');
+    if(uxpDragHasFiles(event)||!dragLooksLikeFiles(event))return;
+    armDropOverlay(event);
+  };
   const handleImageDrop=event=>{
+    if(event&&event.__lk888Drop)return;
+    if(event)event.__lk888Drop=true;
     const snap=snapshotDrop(event&&event.dataTransfer);
     event.preventDefault();event.stopPropagation?.();dropzone.classList.remove('dragging');
     let target=null,node=event.target;
@@ -1029,16 +1107,22 @@ async function init() {
       if(!parent||parent===node)break;
       node=parent;
     }
+    const hasPayload=snap.files.length||snap.locations.length||String(snap.text||'').trim()||typeof (snap.transfer&&snap.transfer.getFiles)==='function';
+    if(!hasPayload){
+      if(eventInDropzone(event))return addDroppedImages(snap,target).catch(error=>status(error.message||'拖入失败。',true));
+      releaseDropOverlay();
+      return;
+    }
     return withBusy(()=>addDroppedImages(snap,target));
   };
-  document.addEventListener('dragenter',acceptDrag,true);
-  document.addEventListener('dragover',acceptDrag,true);
+  document.addEventListener('dragenter',allowPanelDrag,true);
+  document.addEventListener('dragover',allowPanelDrag,true);
   document.addEventListener('dragleave',event=>{if(!document.contains?.(event.relatedTarget))dropzone.classList.remove('dragging');},true);
-  imageRow.addEventListener('dragenter',acceptDrag);
-  imageRow.addEventListener('dragover',acceptDrag);
+  imageRow.addEventListener('dragenter',allowPanelDrag);
+  imageRow.addEventListener('dragover',allowPanelDrag);
   imageRow.addEventListener('drop',handleImageDrop);
-  dropzone.addEventListener('dragenter',acceptDrag);
-  dropzone.addEventListener('dragover',acceptDrag);
+  dropzone.addEventListener('dragenter',armZone,true);
+  dropzone.addEventListener('dragover',armZone,true);
   dropzone.addEventListener('drop',handleImageDrop);
   // Bubble, not capture. UXP often only fills dataTransfer for the element under the cursor;
   // a capture listener on document would see an empty drop and cancel the real target.
