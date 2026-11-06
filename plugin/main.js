@@ -153,7 +153,7 @@ function refresh() {
   show('pause-wait',false);
   $('model').disabled = busy || optimizing; if(promptEditor)promptEditor.setBusy(busy || optimizing);else $('prompt').readOnly=busy || optimizing;
   if($('optimize-prompt')){$('optimize-prompt').textContent=optimizing?'停止优化':'✨ 优化';$('optimize-prompt').disabled=busy;}
-  $('add-reference').disabled = busy; $('clear-reference').disabled = busy;
+  $('add-reference').disabled = false; if($('paste-reference'))$('paste-reference').disabled = false; $('clear-reference').disabled = busy;
   show('recovery',false);
   $('resume').disabled = busy || !job || !job.taskId;
   show('resume', !!(job && job.taskId));
@@ -882,16 +882,8 @@ function dragLooksLikeFiles(event){
   if(!list.length)return true;
   return list.some(type=>type==='files'||type.includes('file')||type==='text/uri-list'||type==='application/x-moz-file');
 }
-function unresolvedDrop(target){
-  if(dropArm&&dropArm.done)return;
-  if(dropArm){
-    dropArm.target=target||dropArm.target;
-    if(dropArm.failed)throw new Error(missDropMessage(dropArm.helperDown));
-    dropArm.expecting=true;
-    status('正在加入拖入的图片…');
-    return;
-  }
-  throw new Error(missDropMessage(false));
+function unresolvedDrop(){
+  throw new Error('这次拖放没有把文件交给面板。请点「添加图片」选择，或粘贴图片。');
 }
 async function addDroppedImages(payload,target = null){
   const snap=payload&&Array.isArray(payload.locations)?payload:snapshotDrop(payload);
@@ -912,14 +904,14 @@ async function addDroppedImages(payload,target = null){
   const resolved=await payloadsFromLocations(snap.locations);
   const payloads=Array.isArray(resolved)?resolved:(resolved&&resolved.payloads)||[];
   if(payloads.length){await addReferencePayloads(payloads,target,!Array.isArray(resolved)&&resolved.truncated?' 一次最多 5 张，其余请再拖一次。':'');releaseDropOverlay();return;}
-  unresolvedDrop(target);
+  unresolvedDrop();
 }
 function settingsPage(open){settingsOpen=open;navigatePage(open?'settings':'edit');}
 
 async function init() {
   bindCriticalActions();
   if (initialized) return; initialized = true;
-  if(typeof navigator!=='undefined'){voice.request('/health').then(data=>console.log('Local voice helper: '+data.state+' '+(data.language||''))).catch(()=>console.log('Local voice helper unavailable; start with the local launcher.'));prewarmDropOverlay();}
+  if(typeof navigator!=='undefined'){voice.request('/health').then(data=>console.log('Local voice helper: '+data.state+' '+(data.language||''))).catch(()=>console.log('Local voice helper unavailable; start with the local launcher.'));}
   try { job = JSON.parse(localStorage.getItem('lk888-job') || 'null'); } catch (_) {}
   if (job && !job.imported && fs.getDataFolder) {
     try {
@@ -993,15 +985,27 @@ async function init() {
   $('add-reference').addEventListener('click',()=>withBusy(async()=>{
     status('请选择要添加的参考图片…');
     const context=selectedJobId;
-    const result=await voice.request('/pick-images');
+    const picked=await storage.localFileSystem.getFileForOpening({allowMultiple:true,types:['png','jpg','jpeg','webp']});
     if(context!==selectedJobId)return;
-    const images=Array.isArray(result.images)?result.images:[];
-    if(!images.length){status('已取消添加图片。');return;}
-    for(const image of images){
-      if(typeof image.data!=='string'||!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(image.data))throw new Error('图片格式无效，请使用 PNG、JPG 或 WebP。');
+    const files=Array.isArray(picked)?picked:picked?[picked]:[];
+    if(!files.length){status('已取消添加图片。');return;}
+    const added=[],problems=[];
+    for(const file of files){
+      const name=String(file&&file.name||'参考图片');
+      try{
+        const declared=imageExtension(name);
+        if(declared&&!['png','jpg','jpeg','webp'].includes(declared)){problems.push(name+' 不是 PNG、JPG 或 WebP。');continue;}
+        const buffer=await file.read({format:storage.formats.binary});
+        if(!buffer||!buffer.byteLength){problems.push(name+' 是空文件。');continue;}
+        const sniffed=declared||sniffImageExt(buffer);
+        if(!sniffed||!['png','jpg','jpeg','webp'].includes(sniffed)){problems.push(name+' 不是 PNG、JPG 或 WebP。');continue;}
+        const safe=sniffed==='jpeg'?'jpg':sniffed;
+        added.push({name:name.slice(0,150),data:'data:image/'+(safe==='jpg'?'jpeg':safe)+';base64,'+fileUtils.arrayBufferToBase64(buffer)});
+      }catch(_){problems.push(name+' 无法读取。');}
     }
-    references.push(...images.map(image=>({name:String(image.name||'参考图片'),data:image.data})));
-    syncInputs();await saveCurrent();status('已添加 '+images.length+' 张参考图。');
+    if(added.length){references.push(...added);syncInputs();await saveCurrent();}
+    if(!added.length){status(problems.join(' ')||'没有读到可添加的图片。',true);return;}
+    status('已添加 '+added.length+' 张参考图。'+(problems.length?problems.join(' '):''),!!problems.length);
     $('input-notice').textContent='';
   }));
   $('paste-reference').addEventListener('click',()=>promptEditor.pasteImage());
@@ -1012,7 +1016,7 @@ async function init() {
   document.addEventListener('mousemove',moveReferenceOnPointer);
   document.addEventListener('mouseup',endReferencePointer);
   const imageRow=$('images-row'),dropzone=$('dropzone');
-  const acceptDrag=event=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='copy';dropzone.classList.add('dragging');if(dragLooksLikeFiles(event))return armDropOverlay(event);};
+  const acceptDrag=event=>{event.preventDefault();if(event.dataTransfer)event.dataTransfer.dropEffect='copy';dropzone.classList.add('dragging');};
   const handleImageDrop=event=>{
     const snap=snapshotDrop(event&&event.dataTransfer);
     event.preventDefault();event.stopPropagation?.();dropzone.classList.remove('dragging');

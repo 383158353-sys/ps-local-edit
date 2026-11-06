@@ -336,5 +336,5 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
   server.on('close',()=>{clearTimeout(probeTimer);probe.kill();overlayReady=false;wakeOverlay();if(overlayChild)overlayChild.kill();for(const session of sessions.values()){clearTimeout(session.timer);clearTimeout(session.killTimer);clearTimeout(session.stopTimer);session.child.kill();}});
   return server;
 }
-if(require.main===module){const server=createVoiceServer();server.on('error',error=>{if(error.code!=='EADDRINUSE'){console.error('本机语音服务无法启动。');process.exitCode=1;}});server.listen(PORT,'127.0.0.1',()=>{try{server.ensureOverlay();}catch(_){}});}
+if(require.main===module){const server=createVoiceServer();server.on('error',error=>{if(error.code!=='EADDRINUSE'){console.error('本机语音服务无法启动。');process.exitCode=1;}});server.listen(PORT,'127.0.0.1');}
 module.exports={createVoiceServer,PORT};

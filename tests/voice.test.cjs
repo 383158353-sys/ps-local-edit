@@ -1,5 +1,6 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
+const fs=require('node:fs');
 const {EventEmitter}=require('node:events');
 const {PassThrough}=require('node:stream');
 const {VoiceController}=require('../plugin/voice');
@@ -94,6 +95,25 @@ test('voice session reports microphone level and distinguishes silence from reje
     state=await(await fetch(base+'/status?id='+start.id+'&cursor=0',{headers})).json();
     assert.match(state.message,/检测到麦克风声音/);
   } finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+});
+test('the assistant does not launch a visible drop layer, and pick-images is not a route',async()=>{
+  assert.doesNotMatch(fs.readFileSync('scripts/voice-server.cjs','utf8'),/listen\(PORT,'127\.0\.0\.1',\(\)=>\{try\{server\.ensureOverlay/);
+  assert.doesNotMatch(fs.readFileSync('plugin/main.js','utf8'),/voice\.request\('\/pick-images'/);
+  const overlays=[];
+  const server=createVoiceServer({spawnWorker:()=>{const child=fakeChild();setImmediate(()=>child.emit('exit',0));return child;},overlayLauncher:()=>{overlays.push('overlay');return fakeChild();},dropWindowLauncher:()=>{overlays.push('window');return fakeChild();}});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const base='http://127.0.0.1:'+server.address().port,headers={'X-PS-Local-Voice':'1'};
+  try{
+    assert.deepEqual(overlays,[]);
+    const idle=await(await fetch(base+'/drop/overlay',{headers})).json();
+    assert.equal(idle.ready,false);
+    assert.equal(idle.action,'idle');
+    for(const method of ['GET','POST']){
+      const missing=await fetch(base+'/pick-images',{method,headers});
+      assert.equal(missing.status,404);
+      assert.match((await missing.json()).message,/没有这个接口/);
+    }
+  }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
 test('health and image prepare succeed on the local assistant',async()=>{
   const server=createVoiceServer({spawnWorker:()=>{const child=fakeChild();setImmediate(()=>{child.stdout.write(JSON.stringify({type:'ready',language:'zh-CN'})+'\n');child.emit('exit',0);});return child;}});
