@@ -26,14 +26,15 @@ class TaskQueue{
   if(note)record.prepareNote=note;
   record.timings.preparedAt=Date.now();record.phase='上传图片，等待平台接单';
   record.pendingSubmissions=record.count;record.state='submitting';this.save();
-  // Each requested output is its own task. The same prompt and images with no
-  // seed make image models return the same picture, so every extra slot gets
-  // a different seed. A single image keeps the previous request shape.
+  // LK888's documented image params have no seed. A retest with distinct
+  // params.seed still returned the same picture from distinct task ids, so
+  // seed is not sent. Extra slots change the prompt, which is the field the
+  // model is documented to read. Midjourney also gets its chaos control.
   const failures=[];
   await Promise.all(Array.from({length:record.count},async(_,index)=>{
-   const slotParams=record.count>1?{...params,seed:variationSeed(index)}:{...params};
+   const slotParams=variationParams(params,record.model,index,record.count);
    try{
-    const submitted=await api.submit(record.model,record.instruction,images,slotParams);
+    const submitted=await api.submit(record.model,variationPrompt(record.instruction,index,record.count),images,slotParams);
     if(submitted&&typeof submitted==='object'){
      if(submitted.note)record.prepareNote=submitted.note;
      if(Array.isArray(submitted.images)&&submitted.images.length){
@@ -50,6 +51,10 @@ class TaskQueue{
   record.timings.acceptedAt=Date.now();
   if(failures.length){record.error=[...new Set(failures.map(e=>e&&e.message).filter(Boolean))].join('；')||'生成提交失败。';const uncertain=failures.some(e=>e&&e.uncertain)&&!record.tasks.some(t=>t.state==='running');record.chargeState=uncertain?'uncertain':(record.tasks.length?'accepted':'rejected');record.state=record.tasks.some(t=>t.state==='running')?'running':uncertain?'uncertain':'failed';record.phase=record.state==='running'?'部分已接单，其余提交失败':uncertain?'提交状态不确定，请到平台确认，勿重复生成':'提交失败';}
   else{record.chargeState='accepted';record.phase='平台生成中';record.state=record.tasks.every(t=>t.state==='ready')?'ready':record.tasks.some(t=>t.state==='running')?'running':'failed';}
+  if(record.count>1){
+   const line='多张分别提交，并已要求每一张给出不同候选。';
+   if(!String(record.prepareNote||'').includes(line))record.prepareNote=record.prepareNote?record.prepareNote+' '+line:line;
+  }
   this.save();
  }
  async tick(){await Promise.all(this.jobs.flatMap(job=>job.tasks.filter(task=>task.state==='running').map(task=>this.query(job,task))));}
@@ -67,8 +72,15 @@ class TaskQueue{
   if(job.state!=='uncertain'&&!job.pendingSubmissions)job.state=job.tasks.every(t=>t.state==='ready')?'ready':job.tasks.some(t=>t.state==='running')?'running':'failed';
  }catch(e){task.error=e.message;if(e.terminal){task.state='failed';task.results=[];if(job.state!=='uncertain')job.state=job.tasks.some(t=>t.state==='running')?'running':'failed';}}finally{this.querying.delete(task.id);this.save();}}
 }
-function variationSeed(index){
-  const mix=Date.now()+(index+1)*104729+Math.floor(Math.random()*1000000000);
-  return mix%2147483646+1;
+function variationPrompt(instruction,index,count){
+  const text=String(instruction||'');
+  if(!(count>1))return text;
+  return text+'\n\n这一张是第'+(index+1)+'张候选：保持上面的修改要求，但光影、景深或次要细节要和其他候选不同。不要在画面里写编号或说明。';
 }
-module.exports={TaskQueue,variationSeed};
+function variationParams(params,model,index,count){
+  const next={...(params||{})};
+  if(!(count>1)||!/mj|midjourney|niji/i.test(String(model||'')))return next;
+  next.chaos=[40,70,100][Math.min(index,2)];
+  return next;
+}
+module.exports={TaskQueue,variationPrompt,variationParams};
