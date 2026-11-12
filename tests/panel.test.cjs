@@ -5,8 +5,8 @@ const { test } = require('node:test');
 const api = require('../plugin/api');
 const {TaskQueue}=require('../plugin/task-queue');const {pngRGBA}=require('../plugin/png');
 
-function harness({ switchDocument = false, reopenSameDocument = false, reopenPathless = false, submissionFails = false, submissionMessage = '', helperDown = false, optimizerDeferred = false, noSelection = false, captureHangs = false, captureMismatch = false, captureError = '', boundsThrows = false, busyTimeoutMs = 0, entryForUrl = null, dropQueue = null } = {}) {
-  const nodes = {}, local = new Map(), calls = [], writes = [], requests = [], reads = [], docEvents = {}, helperCalls=[],optimizerCalls=[],captureArgs=[];let reloads=0, imageDecodes=0,optimizerCancels=0,resolveOptimize;
+function harness({ switchDocument = false, reopenSameDocument = false, reopenPathless = false, submissionFails = false, submissionMessage = '', helperDown = false, optimizerDeferred = false, noSelection = false, captureHangs = false, captureMismatch = false, captureError = '', boundsThrows = false, busyTimeoutMs = 0, entryForUrl = null, dropQueue = null, distinctResults = false } = {}) {
+  const nodes = {}, local = new Map(), calls = [], writes = [], requests = [], reads = [], downloads = [], docEvents = {}, helperCalls=[],optimizerCalls=[],captureArgs=[];let reloads=0, imageDecodes=0,optimizerCancels=0,resolveOptimize;
   function makeNode(id='') { const node={id,value:id==='prompt'?'改成红色':id==='model'?'banana-2':'',textContent:'',hidden:false,style:{},children:[],attributes:{},className:'',classList:{add(){},remove(){}},addEventListener(event,fn){this[event]=fn;},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},append(...items){for(const item of items)this.appendChild(item);},appendChild(item){item.parentNode=this;this.children.push(item);},replaceChildren(...items){this.children=[];this.append(...items);},get parentElement(){return makeNode('parent');}};Object.defineProperty(node,'innerHTML',{get(){return '';},set(value){if(value==='')this.children=[];}});return node; }
   const document = { readyState: 'interactive', addEventListener(event,fn) {docEvents[event]=fn;}, createElement: tag=>makeNode(tag), getElementById(id) { return nodes[id] ||= makeNode(id); },querySelectorAll(){return [];} };
   const selection = noSelection ? null : { bounds: {left:150,top:120,right:350,bottom:240} };
@@ -27,7 +27,9 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
     if(url.includes('127.0.0.1:17402/drop/arm')||url.includes('127.0.0.1:17402/drop/hide')){helperCalls.push({url,options});return {ok:true,json:async()=>({state:'ready'})};}
     if(url.includes('127.0.0.1:17402/drop/cover')||url.includes('127.0.0.1:17402/drop/open')){helperCalls.push({url,options});return {ok:true,json:async()=>({id:'test-drop'})};}
     if(url.includes('127.0.0.1:17402/drop/')){helperCalls.push({url,options});return {ok:true,json:async()=>({state:'ok'})};}
-    if (url.endsWith('/generate')) { requests.push(JSON.parse(options.body)); if (submissionMessage) return { ok:false, status:400, json:async()=>({error:{message:submissionMessage}}) }; if (submissionFails) throw new Error('connection lost'); return { ok: true, json: async () => ({ task_id: requests.length===1?'existing-task':'task-'+requests.length }) }; }
+    if (url.endsWith('/generate')) { requests.push(JSON.parse(options.body)); if (submissionMessage) return { ok:false, status:400, json:async()=>({error:{message:submissionMessage}}) }; if (submissionFails) throw new Error('connection lost'); const taskId=requests.length===1?'existing-task':'task-'+requests.length; return { ok: true, json: async () => ({ task_id: taskId }) }; }
+    if (distinctResults && String(url).includes('/v1/media/status')) { const id=decodeURIComponent(String(url).split('task_id=')[1]||''); return { ok:true, json:async()=>({ is_final:true, state:'success', result_url:'https://cdn.example/'+id+'.png' }) }; }
+    if (distinctResults && String(url).startsWith('https://cdn.example/')) { downloads.push(String(url)); const bytes=Uint8Array.from([idByte(url)]); return { ok:true, headers:{ get:name=>String(name).toLowerCase()==='content-type'?'image/png':'' }, arrayBuffer:async()=>bytes.buffer }; }
     if (switchDocument) app.activeDocument = { ...originalDoc, id: 99, path:'C:/project/other.psd' };
     if (reopenSameDocument) app.activeDocument = { ...originalDoc, id: 99 };
     if (reopenPathless) app.activeDocument = { ...originalDoc, id: 99, path:'C:/project/sample.psd' };
@@ -53,7 +55,8 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
   // init loads saved prompt; restore the user's entry for this run.
   nodes.prompt ||= document.getElementById('prompt');nodes.prompt.value = '改成红色';
   document.getElementById('quality'); document.getElementById('output-size');
-  return { app, newDraft:()=>context.newDraft(),openHistory:id=>context.openHistory(id), currentId:()=>vm.runInNewContext("selectedJobId",context), nodes, docEvents, calls, writes, reads, local, capture, captureArgs, requests, helperCalls, optimizerCalls,resolveOptimize:value=>resolveOptimize?.(value),saveAnnotation:image=>context.saveAnnotation(image),get optimizerCancels(){return optimizerCancels;}, get reloads(){return reloads;}, get imageDecodes(){return imageDecodes;}, ready:async()=>{for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r));nodes.prompt.value='改成红色';} };
+  return { app, newDraft:()=>context.newDraft(),openHistory:id=>context.openHistory(id), currentId:()=>vm.runInNewContext("selectedJobId",context), nodes, docEvents, calls, writes, reads, downloads, local, capture, captureArgs, requests, helperCalls, optimizerCalls,resolveOptimize:value=>resolveOptimize?.(value),saveAnnotation:image=>context.saveAnnotation(image),get optimizerCancels(){return optimizerCancels;}, get reloads(){return reloads;}, get imageDecodes(){return imageDecodes;}, ready:async()=>{for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r));nodes.prompt.value='改成红色';} };
+function idByte(url){return String(url).includes('task-3')?3:String(url).includes('task-2')?2:1;}
 }
 
 
@@ -376,7 +379,22 @@ test('generation failure shows the provider reason and never a voice-session or 
 test('reload button saves the current editor and reloads without resubmitting',async()=>{const h=harness();await h.ready();await h.nodes['tab-edit'].click();h.nodes.prompt.value='保留这个提示词';await h.nodes['reload-panel'].click();assert.equal(h.reloads,1);assert.equal(JSON.parse(h.local.get('lk888-jobs'))[0].prompt,'保留这个提示词');assert.equal(h.local.get('lk888-reload-job-id'),JSON.parse(h.local.get('lk888-jobs'))[0].id);assert.equal(h.requests.length,0);});
 test('automatic generation size and ratio follow the selected region',async()=>{const h=harness();await h.ready();await h.nodes['capture-selection'].click();await h.nodes.generate.click();await h.ready();assert.equal(h.requests[0].params.image_size,'1K');assert.equal(h.requests[0].params.aspect_ratio,'16:9');});
 test('another region can submit while previous task remains in history',async()=>{const h=harness();await h.ready();await h.nodes.generate.click();await h.ready();await h.nodes['capture-selection'].click();h.nodes.prompt.value='修改另一区域';await h.nodes.generate.click();await h.ready();assert.equal(h.requests.length,2);assert.equal(JSON.parse(h.local.get('lk888-jobs')).length,2);assert.equal(h.calls.length,0);});
-test('model quality aspect and four tasks are preserved',async()=>{const h=harness();await h.ready();h.nodes.count.value='4';h.nodes.quality.value='2K';h.nodes['output-size'].value='16:9';await h.nodes.generate.click();await h.ready();assert.equal(h.requests.length,4);assert.equal(h.requests[0].params.image_size,'2K');assert.equal(h.requests[0].params.aspect_ratio,'16:9');assert.equal(h.calls.length,0);});
+test('model quality aspect and four tasks are preserved',async()=>{const h=harness();await h.ready();h.nodes.count.value='4';h.nodes.quality.value='2K';h.nodes['output-size'].value='16:9';await h.nodes.generate.click();await h.ready();assert.equal(h.requests.length,4);assert.equal(h.requests[0].params.image_size,'2K');assert.equal(h.requests[0].params.aspect_ratio,'16:9');assert.equal(new Set(h.requests.map(request=>JSON.stringify(request.params))).size,1);assert.equal(new Set(h.requests.map(request=>request.prompt)).size,4);assert.ok(h.requests.every((request,index)=>request.prompt.includes('第'+(index+1)+'张候选')));assert.equal(h.calls.length,0);});
+test('three distinct results stay on their own cards and the second card places its own file',async()=>{
+ const h=harness({distinctResults:true});await h.ready();h.nodes.count.value='3';await h.nodes.generate.click();await h.ready();
+ assert.equal(h.requests.length,3);
+ assert.equal(new Set(h.requests.map(request=>request.prompt)).size,3);
+ assert.equal(new Set(h.requests.map(request=>JSON.stringify(request.params.images))).size,1);
+ const job=JSON.parse(h.local.get('lk888-jobs'))[0];
+ assert.deepEqual(job.tasks.map(task=>task.id),['existing-task','task-2','task-3']);
+ const sources=job.tasks.map(task=>task.results[0].source);
+ assert.deepEqual(sources,['https://cdn.example/existing-task.png','https://cdn.example/task-2.png','https://cdn.example/task-3.png']);
+ const imgs=findNodes(h.nodes['task-content'],node=>node.id==='img');
+ assert.deepEqual(imgs.map(img=>img.src),sources);
+ await imgs[1].onclick();await h.ready();
+ assert.deepEqual(h.downloads,['https://cdn.example/task-2.png']);
+ assert.equal(h.calls.length,1);
+});
 
 function findNode(root,predicate){if(predicate(root))return root;for(const child of root.children||[]){const match=findNode(child,predicate);if(match)return match;}return null;}
 function findNodes(root,predicate){return [...(predicate(root)?[root]:[]),...(root.children||[]).flatMap(child=>findNodes(child,predicate))];}

@@ -9,11 +9,21 @@ class TaskQueue{
   if(images.length&&api.prepareImages){try{images=await api.prepareImages(images);}catch(error){record.prepareNote=error&&error.prepareSkipped?error.message:'本机助手未开启，已改用原图直接提交。';}}
   record.timings.preparedAt=Date.now();record.phase='上传图片，等待平台接单';
   record.pendingSubmissions=record.count;record.state='submitting';this.save();
-  // Each requested output is submitted once. Independent requests need not wait
-  // for the preceding model task to be accepted or completed.
+  // Each requested output is submitted once. The count slots used to send the
+  // same prompt and params, so the platform returned one picture for every card.
+  // Slots after the first change only the prompt text. A repeated task id is
+  // the platform's own dedup: keep that one task and do not submit another.
   const failures=[];
   await Promise.all(Array.from({length:record.count},async(_,index)=>{
-   try{const id=await api.submit(record.model,record.instruction,images,params);record.tasks.push({id,state:'running',results:[],outputIndex:index});}
+   try{
+    const id=String(await api.submit(record.model,variationPrompt(record.instruction,index,record.count),images,params));
+    if(record.tasks.some(task=>task.id===id)){
+     const line='平台对多张提交返回了同一个任务，只保留一张，没有再次提交。';
+     if(!String(record.prepareNote||'').includes(line))record.prepareNote=record.prepareNote?record.prepareNote+' '+line:line;
+     return;
+    }
+    record.tasks.push({id,state:'running',results:[],outputIndex:index});
+   }
    catch(e){failures.push(e);record.error=e.message;}
    finally{record.pendingSubmissions--;record.phase='已接单 '+record.tasks.length+'/'+record.count+'，待响应 '+record.pendingSubmissions;this.save();}
   }));
@@ -38,4 +48,9 @@ class TaskQueue{
   if(job.state!=='uncertain'&&!job.pendingSubmissions)job.state=job.tasks.every(t=>t.state==='ready')?'ready':job.tasks.some(t=>t.state==='running')?'running':'failed';
  }catch(e){task.error=e.message;if(e.terminal){task.state='failed';task.results=[];if(job.state!=='uncertain')job.state=job.tasks.some(t=>t.state==='running')?'running':'failed';}}finally{this.querying.delete(task.id);this.save();}}
 }
-module.exports={TaskQueue};
+function variationPrompt(instruction,index,count){
+ const text=String(instruction||'');
+ if(!(count>1))return text;
+ return text+'\n\n这一张是第'+(index+1)+'张候选：保持上面的修改要求，但光影、景深或次要细节要和其他候选不同。不要在画面里写编号或说明。';
+}
+module.exports={TaskQueue,variationPrompt};
