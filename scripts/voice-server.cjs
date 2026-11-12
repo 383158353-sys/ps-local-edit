@@ -59,7 +59,7 @@ function imageDataUrl(filePath, bytes) {
 }
 async function readDroppedFile(filePath) {
   const stat = await fsPromises.stat(filePath);
-  if (!stat.isFile() || stat.size < 1 || stat.size > 10 * 1024 * 1024) throw new Error('每张图片不超过 10MB。');
+  if (!stat.isFile() || stat.size < 1 || stat.size > 40 * 1024 * 1024) throw new Error('每张图片不超过 40MB。');
   return fsPromises.readFile(filePath);
 }
 function openAnnotationWindow(id) {
@@ -94,9 +94,10 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
   const annotationSessions = new Map();
   let overlayChild = null;
   let overlayReady = false;
+  const dropTraces = [];
   let overlayGen = 0;
   let overlayWaiters = [];
-  let overlayState = { action: 'idle', id: null, at: 0, x: null, y: null, left: null, top: null, width: null, height: null };
+  let overlayState = { action: 'idle', id: null, at: 0, x: null, y: null, left: null, top: null, width: null, height: null, offsetX: null, offsetY: null };
   function ensureOverlay() {
     if (overlayChild && overlayChild.exitCode == null && !overlayChild.killed) return overlayChild;
     const child = overlayLauncher();
@@ -109,7 +110,7 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
     return child;
   }
   function overlayView() {
-    return { action: overlayState.action, id: overlayState.id, at: overlayState.at, x: overlayState.x, y: overlayState.y, left: overlayState.left, top: overlayState.top, width: overlayState.width, height: overlayState.height, gen: overlayGen, ready: overlayReady };
+    return { action: overlayState.action, id: overlayState.id, at: overlayState.at, x: overlayState.x, y: overlayState.y, left: overlayState.left, top: overlayState.top, width: overlayState.width, height: overlayState.height, offsetX: overlayState.offsetX, offsetY: overlayState.offsetY, gen: overlayGen, ready: overlayReady };
   }
   function wakeOverlay() {
     const waiters = overlayWaiters.splice(0);
@@ -164,6 +165,22 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
     if (!trustedOrigin || request.headers['x-ps-local-voice'] !== '1') return reply(403,{message:'仅允许本机插件调用。'});
     const url = new URL(request.url,'http://127.0.0.1');
     if (url.pathname === '/health' && request.method === 'GET') return reply(200,readiness);
+    if (url.pathname === '/images/prepare' && request.method === 'POST') {
+      readJsonBody(request, 128 * 1024 * 1024, parsed => {
+        if (!parsed || !Array.isArray(parsed.images)) return reply(400, {message:'图片预处理请求无效。'});
+        if (parsed.images.length > 16) return reply(400, {message:'图片数量过多。'});
+        for (const item of parsed.images) {
+          if (typeof item !== 'string' || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=\s]+$/i.test(item)) return reply(400, {message:'图片预处理遇到无法识别的图片。'});
+        }
+        try {
+          const fitted = require('../plugin/image-budget').fitUploadImages(parsed.images.map(item => item.replace(/\s+/g, '')));
+          return reply(200, {images: fitted.images, prepared: true, compressed: fitted.compressed, note: fitted.note});
+        } catch (error) {
+          return reply(400, {message: error && error.message || '图片预处理失败。'});
+        }
+      });
+      return;
+    }
     if (url.pathname === '/clipboard' && request.method === 'GET') {
       clipboardReader().then(data=>reply(200,data)).catch(error=>reply(500,{message:error.message}));
       return;
@@ -181,7 +198,7 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
             if(!native)throw new Error('只接受本机 PNG、JPG 或 WebP 路径。');
             let bytes;
             try{bytes=await pathReader(native);}catch(_){throw new Error('拖入的图片无法读取。');}
-            if(!bytes||bytes.length<1||bytes.length>10*1024*1024)throw new Error('每张图片不超过 10MB。');
+            if(!bytes||bytes.length<1||bytes.length>40*1024*1024)throw new Error('每张图片不超过 40MB。');
             references.push({name:path.win32.basename(native).slice(0,150),data:imageDataUrl(native,bytes)});
           }
           reply(200,{references});
@@ -213,7 +230,9 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
         const top=num(parsed&&parsed.top);
         const width=num(parsed&&parsed.width);
         const height=num(parsed&&parsed.height);
-        publishOverlay({action:'show',id,at:Date.now(),x,y,left,top,width,height});
+        const offsetX=num(parsed&&parsed.offsetX);
+        const offsetY=num(parsed&&parsed.offsetY);
+        publishOverlay({action:'show',id,at:Date.now(),x,y,left,top,width,height,offsetX,offsetY});
         return reply(200,{id,ready:overlayReady});
       });
       return;
@@ -228,6 +247,21 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
       const timer=setTimeout(send,250);
       waiter=()=>{clearTimeout(timer);send();};
       overlayWaiters.push(waiter);
+      return;
+    }
+    if(url.pathname==='/drop/trace'&&request.method==='GET')return reply(200,{traces:dropTraces});
+    if(url.pathname==='/drop/trace'&&request.method==='POST'){
+      readJsonBody(request, 2048, parsed => {
+        const allowed=['files','items','entries','paths','readable','types','accepted'];
+        const count=value=>Number.isInteger(value)&&value>=0&&value<=8?value:null;
+        if(!parsed||typeof parsed!=='object'||Array.isArray(parsed)||Object.keys(parsed).some(key=>!allowed.includes(key)))return reply(400,{message:'拖放记录无效。'});
+        const files=count(parsed.files),items=count(parsed.items),entries=count(parsed.entries),paths=count(parsed.paths),readable=count(parsed.readable);
+        const types=Array.isArray(parsed.types)?parsed.types:[];
+        if([files,items,entries,paths,readable].some(value=>value==null)||typeof parsed.accepted!=='boolean'||types.length>8||types.some(type=>typeof type!=='string'||!/^[A-Za-z0-9][A-Za-z0-9.+_/\\-]{0,63}$/.test(type)))return reply(400,{message:'拖放记录无效。'});
+        dropTraces.push({at:Date.now(),files,items,entries,paths,readable,types,accepted:parsed.accepted});
+        if(dropTraces.length>20)dropTraces.shift();
+        return reply(200,{state:'recorded'});
+      });
       return;
     }
     if(url.pathname==='/drop/upload'&&request.method==='POST'){
@@ -320,5 +354,5 @@ function createVoiceServer({ spawnWorker = worker, clipboardReader = readClipboa
   server.on('close',()=>{clearTimeout(probeTimer);probe.kill();overlayReady=false;wakeOverlay();if(overlayChild)overlayChild.kill();for(const session of sessions.values()){clearTimeout(session.timer);clearTimeout(session.killTimer);clearTimeout(session.stopTimer);session.child.kill();}});
   return server;
 }
-if(require.main===module){const server=createVoiceServer();server.on('error',error=>{if(error.code!=='EADDRINUSE'){console.error('本机语音服务无法启动。');process.exitCode=1;}});server.listen(PORT,'127.0.0.1',()=>{try{server.ensureOverlay();}catch(_){}});}
+if(require.main===module){const server=createVoiceServer();server.on('error',error=>{if(error.code!=='EADDRINUSE'){console.error('本机语音服务无法启动。');process.exitCode=1;}});try{server.ensureOverlay();}catch(_){}server.listen(PORT,'127.0.0.1');}
 module.exports={createVoiceServer,PORT};

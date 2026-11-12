@@ -5,9 +5,9 @@ const { test } = require('node:test');
 const api = require('../plugin/api');
 const {TaskQueue}=require('../plugin/task-queue');const {pngRGBA}=require('../plugin/png');
 
-function harness({ switchDocument = false, reopenSameDocument = false, reopenPathless = false, submissionFails = false, submissionMessage = '', helperDown = false, optimizerDeferred = false, noSelection = false, captureHangs = false, captureMismatch = false, captureError = '', boundsThrows = false, boundsError = '', busyTimeoutMs = 0, dropGraceMs = 0, entryForUrl = null, dropQueue = null } = {}) {
-  const nodes = {}, local = new Map(), calls = [], writes = [], requests = [], reads = [], docEvents = {}, helperCalls=[],optimizerCalls=[],captureArgs=[];let reloads=0, imageDecodes=0,optimizerCancels=0,resolveOptimize;
-  function makeNode(id='') { const node={id,value:id==='prompt'?'改成红色':id==='model'?'banana-2':'',textContent:'',hidden:false,style:{},children:[],attributes:{},className:'',classList:{add(){},remove(){}},addEventListener(event,fn){this[event]=fn;},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){delete this.attributes[name];},append(...items){for(const item of items)this.appendChild(item);},appendChild(item){item.parentNode=this;this.children.push(item);},replaceChildren(...items){this.children=[];this.append(...items);},get parentElement(){return makeNode('parent');}};Object.defineProperty(node,'innerHTML',{get(){return '';},set(value){if(value==='')this.children=[];}});return node; }
+function harness({ switchDocument = false, reopenSameDocument = false, reopenPathless = false, submissionFails = false, submissionMessage = '', helperDown = false, helperPrepareMissing = false, optimizerDeferred = false, noSelection = false, captureHangs = false, captureMismatch = false, captureError = '', boundsThrows = false, boundsError = '', busyTimeoutMs = 0, dropGraceMs = 0, entryForUrl = null, dropQueue = null, pickedFiles = null, pickerError = '', remoteResult = false, remoteDownloadFails = false, remoteBytes = 0, tempFileUrl = false, blobThrows = false } = {}) {
+  const nodes = {}, local = new Map(), calls = [], writes = [], requests = [], reads = [], docEvents = {}, helperCalls=[],optimizerCalls=[],captureArgs=[],filePickerCalls=[];let reloads=0, imageDecodes=0,optimizerCancels=0,resolveOptimize;
+  function makeNode(id='') { const node={id,value:id==='prompt'?'改成红色':id==='model'?'banana-2':'',textContent:'',hidden:false,style:{},children:[],attributes:{},className:'',classList:{add(){},remove(){}},addEventListener(event,fn){this[event]=fn;},setAttribute(name,value){this.attributes[name]=value;},getAttribute(name){return Object.prototype.hasOwnProperty.call(this.attributes,name)?this.attributes[name]:null;},removeAttribute(name){delete this.attributes[name];if(name==='src')this.src='';},append(...items){for(const item of items)this.appendChild(item);},appendChild(item){item.parentNode=this;this.children.push(item);},replaceChildren(...items){this.children=[];this.append(...items);},get parentElement(){return makeNode('parent');}};Object.defineProperty(node,'innerHTML',{get(){return '';},set(value){if(value==='')this.children=[];}});return node; }
   const document = { readyState: 'interactive', addEventListener(event,fn) {docEvents[event]=fn;}, createElement: tag=>makeNode(tag), getElementById(id) { return nodes[id] ||= makeNode(id); },querySelectorAll(){return [];} };
   const selection = noSelection ? null : { bounds: {left:150,top:120,right:350,bottom:240} };
   if (boundsThrows && selection) Object.defineProperty(selection, 'bounds', { get() { throw new Error('dom bounds blocked'); } });
@@ -18,23 +18,28 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
   const capture = { bounds, maskData: mask, documentWidth:1000,documentHeight:800,context: { documentId: 12, documentName: 'sample.psd', documentPath:reopenPathless?'':'C:/project/sample.psd', originalBounds: { left: 150, top: 120, right: 350, bottom: 240 } }, imageData: { sourceBounds: bounds, imageData: { width: 300, height: 200, components:4,getData:async()=>new Uint8Array(300*200*4), dispose() {} } } };
   const ps = { getSelectionBounds:async()=>{ if(boundsError) throw new Error(boundsError); return {left:150,top:120,right:350,bottom:240,width:200,height:120}; },hasActiveSelection:async()=>!noSelection,captureSelection: async (...args) => { captureArgs.push(args); if (captureError) throw new Error(captureError); if (captureHangs) return new Promise(() => {}); if (captureMismatch) return {...capture, imageData:{ sourceBounds:{ left:11.5, top:7.25, right:311.5, bottom:207.25 }, imageData:capture.imageData.imageData }}; return capture; }, placeBack: async (...args) => calls.push(args),placeGeneratedAsLayer:async (...args)=>calls.push(args) };
   const dataFiles=new Map();const folder={createFile:async name=>({write:async value=>dataFiles.set(name,value)}),getEntry:async name=>{reads.push(name);return {read:async()=>dataFiles.get(name)};}};
-  const storage = { formats: { binary: 'binary' }, secureStorage: { getItem: async () => new Uint8Array(Buffer.from('test-key')) }, localFileSystem: { getDataFolder:async()=>folder,getTemporaryFolder: async () => ({ createFile: async () => ({ write: async value => writes.push(value) }) }), createSessionToken: () => 'session-token', ...(entryForUrl?{getEntryWithUrl:entryForUrl}:{}) } };
+  const storage = { formats: { binary: 'binary' }, secureStorage: { getItem: async () => new Uint8Array(Buffer.from('test-key')) }, localFileSystem: { getDataFolder:async()=>folder,getTemporaryFolder: async () => ({ createFile: async name => ({ name, url: tempFileUrl ? 'plugin-temp:///' + encodeURIComponent(name || 'preview') : undefined, write: async value => writes.push(value) }) }), createSessionToken: () => 'session-token', getFileForOpening: async options => { filePickerCalls.push(options); if (pickerError) throw new Error(pickerError); return pickedFiles; }, ...(entryForUrl?{getEntryWithUrl:entryForUrl}:{}) } };
   const fetch = async (url, options) => {
-    if(helperDown&&String(url).includes('127.0.0.1:17402'))return {ok:false,status:404,json:async()=>({message:'语音会话已结束，请重新开始。'})};
+    if(helperDown&&String(url).includes('127.0.0.1:17402'))throw new Error('fetch failed');
+    if(helperPrepareMissing&&String(url).includes('127.0.0.1:17402/images/prepare'))return {ok:false,status:404,json:async()=>({message:'本机服务没有这个接口。'})};
+    if(helperPrepareMissing&&String(url).includes('127.0.0.1:17402/health'))return {ok:true,json:async()=>({state:'ready',language:'zh-CN'})};
     if(url.includes('127.0.0.1:17402/annotate/')){helperCalls.push({url,options});return {ok:true,json:async()=>url.includes('/open')?{id:'test-annotation'}:{state:'waiting'}};}
     if(url.includes('127.0.0.1:17402/drop/read')){helperCalls.push({url,options});const body=JSON.parse(options.body||'{}');const references=(Array.isArray(body.paths)?body.paths:[]).map(item=>({name:String(item).split(/[/\\]/).pop(),data:'data:image/png;base64,YWJj'}));return {ok:true,json:async()=>({references})};}
     if(url.includes('127.0.0.1:17402/drop/poll')){helperCalls.push({url,options});const references=dropQueue?dropQueue.shift()||[]:[];return {ok:true,json:async()=>({references})};}
     if(url.includes('127.0.0.1:17402/drop/arm')||url.includes('127.0.0.1:17402/drop/hide')){helperCalls.push({url,options});return {ok:true,json:async()=>({state:'ready'})};}
-    if(url.includes('127.0.0.1:17402/drop/cover')||url.includes('127.0.0.1:17402/drop/open')){helperCalls.push({url,options});return {ok:true,json:async()=>({id:'test-drop'})};}
+    if(url.includes('127.0.0.1:17402/drop/cover')||url.includes('127.0.0.1:17402/drop/open')){helperCalls.push({url,options});return {ok:true,json:async()=>({id:'test-drop',ready:true})};}
     if(url.includes('127.0.0.1:17402/drop/')){helperCalls.push({url,options});return {ok:true,json:async()=>({state:'ok'})};}
+    if (String(url).startsWith('https://cdn.example/')) { if (remoteDownloadFails) throw new Error('network down'); const bytes=remoteBytes>0?new Uint8Array(remoteBytes):Uint8Array.from([137,80,78,71,13,10,26,10]); if(bytes.length>=8){bytes[0]=137;bytes[1]=80;bytes[2]=78;bytes[3]=71;} return { ok:true, headers:{ get:name=>String(name).toLowerCase()==='content-type'?'image/png':'' }, arrayBuffer:async()=>bytes.buffer, blob:async()=>new Blob([bytes],{type:'image/png'}) }; }
     if (url.endsWith('/generate')) { requests.push(JSON.parse(options.body)); if (submissionMessage) return { ok:false, status:400, json:async()=>({error:{message:submissionMessage}}) }; if (submissionFails) throw new Error('connection lost'); return { ok: true, json: async () => ({ task_id: requests.length===1?'existing-task':'task-'+requests.length }) }; }
     if (switchDocument) app.activeDocument = { ...originalDoc, id: 99, path:'C:/project/other.psd' };
     if (reopenSameDocument) app.activeDocument = { ...originalDoc, id: 99 };
     if (reopenPathless) app.activeDocument = { ...originalDoc, id: 99, path:'C:/project/sample.psd' };
-    return { ok: true, json: async () => ({ is_final: true, state: 'success', result_url: 'data:image/png;base64,YWJj' }) };
+    return { ok: true, json: async () => ({ is_final: true, state: 'success', result_url: remoteResult ? 'https://cdn.example/result.png' : 'data:image/png;base64,YWJj' }) };
   };
   class Client extends api.MediaClient { constructor(key) { super(key, fetch); } }
-  const context = { __lk888BusyTimeoutMs: busyTimeoutMs || undefined, __lk888DropGraceMs: dropGraceMs || undefined, document, location:{reload:()=>{reloads++;}}, localStorage: { getItem: k => local.get(k) || null, setItem: (k, v) => local.set(k, v), removeItem: k => local.delete(k) }, setTimeout, clearTimeout, Uint8Array, console, fetch, require(name) {
+  const previewBlob=blobThrows?function Blob(){throw new Error('UXP Blob is unavailable');}:Blob;
+  const previewURL=blobThrows?{createObjectURL(){throw new Error('UXP createObjectURL is unavailable');},revokeObjectURL(){throw new Error('UXP revokeObjectURL is unavailable');}}:URL;
+  const context = { __lk888BusyTimeoutMs: busyTimeoutMs || undefined, __lk888DropGraceMs: dropGraceMs || undefined, document, location:{reload:()=>{reloads++;}}, localStorage: { getItem: k => local.get(k) || null, setItem: (k, v) => local.set(k, v), removeItem: k => local.delete(k) }, setTimeout, clearTimeout, Uint8Array, Blob:previewBlob, URL:previewURL, btoa, atob, console, fetch, require(name) {
     if (name === 'photoshop') return { app, imaging: { encodeImageData: async () => 'YWJj' }, constants: { DocumentMode: { RGB: 'RGB' } } };
     if (name === 'uxp') return { storage };
     if (name === './modules/ps') return ps;if(name==='./modules/geometry')return require('../plugin/modules/geometry');
@@ -53,11 +58,57 @@ function harness({ switchDocument = false, reopenSameDocument = false, reopenPat
   // init loads saved prompt; restore the user's entry for this run.
   nodes.prompt ||= document.getElementById('prompt');nodes.prompt.value = '改成红色';
   document.getElementById('quality'); document.getElementById('output-size');
-  return { app, newDraft:()=>context.newDraft(),openHistory:id=>context.openHistory(id), currentId:()=>vm.runInNewContext("selectedJobId",context), nodes, docEvents, calls, writes, reads, local, capture, captureArgs, requests, helperCalls, optimizerCalls,resolveOptimize:value=>resolveOptimize?.(value),saveAnnotation:image=>context.saveAnnotation(image),get optimizerCancels(){return optimizerCancels;}, get reloads(){return reloads;}, get imageDecodes(){return imageDecodes;}, ready:async()=>{for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r));nodes.prompt.value='改成红色';} };
+  return { app, newDraft:()=>context.newDraft(),openHistory:id=>context.openHistory(id), currentId:()=>vm.runInNewContext("selectedJobId",context), nodes, docEvents, calls, writes, reads, local, capture, captureArgs, requests, helperCalls, filePickerCalls, optimizerCalls,resolveOptimize:value=>resolveOptimize?.(value),saveAnnotation:image=>context.saveAnnotation(image),get optimizerCancels(){return optimizerCancels;}, get reloads(){return reloads;}, get imageDecodes(){return imageDecodes;}, ready:async()=>{for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r));nodes.prompt.value='改成红色';} };
 }
 
 
 test('selection uses lossless PNG and does not submit a task',async()=>{const h=harness();await h.ready();await h.nodes['capture-selection'].click();assert.match(h.nodes.preview.src,/^data:image\/png/);assert.equal(h.requests.length,0);});
+test('loading the panel does not show a drop window',async()=>{
+ const h=harness();await h.ready();
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(cover|open)/.test(call.url)));
+});
+test('add image uses the Photoshop file picker for several files and a bad type does not lock the panel',async()=>{
+ const h=harness({pickedFiles:[{name:'中文 图.png',read:async()=>Uint8Array.from([1,2,3]).buffer},{name:'second.jpg',read:async()=>Uint8Array.from([4]).buffer},{name:'notes.txt',read:async()=>Uint8Array.from([7]).buffer}]});
+ await h.ready();
+ await h.nodes['add-reference'].click();
+ await h.ready();
+ assert.equal(h.filePickerCalls[0].allowMultiple,true);
+ assert.equal(JSON.stringify(Array.from(h.filePickerCalls[0].types)),JSON.stringify(['png','jpg','jpeg','webp']));
+ assert.equal(h.nodes['reference-thumbs'].children.length,2);
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'中文 图.png');
+ assert.equal(h.nodes['reference-thumbs'].children[1].children[2].textContent,'second.jpg');
+ assert.match(h.nodes.status.textContent,/已添加 2/);
+ assert.match(h.nodes.status.textContent,/notes.txt/);
+ assert.ok(!h.helperCalls.some(call=>call.url.includes('/pick-images')));
+ assert.equal(h.nodes.generate.disabled,false);
+});
+test('cancelling or failing the file picker leaves generation available',async()=>{
+ const cancelled=harness();await cancelled.ready();
+ await cancelled.nodes['add-reference'].click();await cancelled.ready();
+ assert.match(cancelled.nodes.status.textContent,/已取消添加图片/);
+ assert.equal(cancelled.nodes.generate.disabled,false);
+ const failed=harness({pickerError:'dialog blocked'});await failed.ready();
+ await failed.nodes['add-reference'].click();await failed.ready();
+ assert.match(failed.nodes.status.textContent,/dialog blocked/);
+ assert.equal(failed.nodes.generate.disabled,false);
+});
+test('images can be added while a generation is in flight without resubmitting it',async()=>{
+ const h=harness({pickedFiles:[{name:'额外.png',read:async()=>Uint8Array.from([9]).buffer}]});
+ await h.ready();
+ h.nodes.prompt.value='生成中仍可加图';
+ await h.nodes.generate.click();await h.ready();
+ const before=h.requests.length;
+ const job=JSON.parse(h.local.get('lk888-jobs'))[0];
+ assert.ok(job.tasks.length);
+ assert.equal(h.nodes['add-reference'].disabled,false);
+ await h.nodes['add-reference'].click();await h.ready();
+ assert.equal(h.requests.length,before);
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'额外.png');
+ const after=JSON.parse(h.local.get('lk888-jobs'))[0];
+ assert.equal(after.id,job.id);
+ assert.equal(after.tasks.length,job.tasks.length);
+ assert.equal(after.tasks[0].id,job.tasks[0].id);
+});
 test('selection read is a native click and does not depend on sp-button pointerup',async()=>{
  const html=fs.readFileSync('plugin/index.html','utf8');
  assert.match(html,/<button id="capture-selection" type="button">局部改图 · 读取选区<\/button>/);
@@ -103,70 +154,93 @@ test('dropping UXP and browser files adds numbered reference images',async()=>{
  assert.equal(tiles[1].children[0].textContent,'2');
  assert.equal(tiles[0].children[2].textContent,'第一张.png');
  assert.equal(tiles[1].children[2].textContent,'第二张.jpg');
- assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/')));
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(?!trace)/.test(call.url)));
  await h.nodes['capture-selection'].click();
  assert.equal(h.nodes['reference-thumbs'].children.length,2);
 });
-test('an empty UXP drop is caught by the overlay and does not open a dialog',async()=>{
- const h=harness({dropQueue:[[{name:'拖入.png',data:'data:image/png;base64,YWJj'}]]});await h.ready();
- const enter=h.nodes['images-row'].dragenter({preventDefault(){},screenX:320,screenY:240,dataTransfer:{types:['Files'],files:[],items:[]}});
- await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
- await enter;
- await new Promise(resolve=>setTimeout(resolve,80));
- const cover=h.helperCalls.find(call=>call.url.includes('/drop/cover')&&call.options.method==='POST');
- assert.ok(cover);
- assert.deepEqual(JSON.parse(cover.options.body),{x:320,y:240});
- assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
- assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/poll?id=test-drop')));
- assert.equal(h.nodes['reference-thumbs'].children.length,1);
- assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'拖入.png');
- assert.doesNotMatch(h.nodes.status.textContent,/该来源没有提供可读取的图片|语音会话|提交状态不确定|局部改图 · 拖入/);
+test('an Explorer drop the panel cannot read is imported from the add-area catch',async()=>{
+ const h=harness({dropGraceMs:2000,dropQueue:[[{name:'资源管理器.png',data:'data:image/png;base64,YWJj'}]]});
+ await h.ready();
+ h.nodes.dropzone.getBoundingClientRect=()=>({left:10,top:20,width:160,height:72});
+ h.nodes.dropzone.dragenter({preventDefault(){},currentTarget:h.nodes.dropzone,clientX:40,clientY:35,screenX:400,screenY:300,dataTransfer:{types:['Files'],files:[],items:[]}});
+ h.nodes.dropzone.drop({preventDefault(){},stopPropagation(){},target:h.nodes.dropzone,currentTarget:h.nodes.dropzone,dataTransfer:{types:['Files'],files:[],items:[]}});
+ for(let i=0;i<40&&!h.nodes['reference-thumbs'].children.length;i++)await new Promise(resolve=>setTimeout(resolve,50));
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'资源管理器.png');
+ const cover=h.helperCalls.find(call=>call.url.includes('/drop/cover'));
+ const body=JSON.parse(cover.options.body);
+ assert.equal(body.width,160);
+ assert.equal(body.height,72);
+ assert.equal(body.offsetX,30);
+ assert.equal(body.offsetY,15);
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/open|\/clipboard/.test(call.url)));
+ assert.match(h.nodes.status.textContent,/已添加/);
+ assert.doesNotMatch(h.nodes.status.textContent,/没有读到拖入的图片|停一下再松开|接图层还在启动|松手添加/);
+ assert.equal(h.nodes.generate.disabled,false);
 });
-test('the overlay keeps polling until the same drag delivers the picture',async()=>{
- const queue=[[],[{name:'窗口.jpg',data:'data:image/jpeg;base64,YWJj'}]];
- const h=harness({dropQueue:queue});await h.ready();
- const enter=h.nodes.dropzone.dragenter({preventDefault(){},dataTransfer:{types:['Files'],files:[],items:[]}});
- await h.nodes.dropzone.drop({preventDefault(){},stopPropagation(){},target:h.nodes.dropzone,dataTransfer:{files:[],items:[]}});
- await enter;
- assert.match(h.nodes.status.textContent,/正在加入拖入的图片/);
- assert.equal(h.nodes['reference-thumbs'].children.length,0);
- await new Promise(resolve=>setTimeout(resolve,700));
- assert.equal(h.nodes['reference-thumbs'].children.length,1);
- assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'窗口.jpg');
- assert.match(h.nodes.status.textContent,/已添加 1 张参考图/);
- assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
+test('an add-area catch during generation adds the image and does not resubmit',async()=>{
+ const h=harness({dropGraceMs:2000,dropQueue:[[{name:'生成中拖入.png',data:'data:image/png;base64,YWJj'}]]});
+ await h.ready();
+ h.nodes.prompt.value='生成中仍可拖图';
+ await h.nodes.generate.click();await h.ready();
+ const before=h.requests.length;
+ const job=JSON.parse(h.local.get('lk888-jobs'))[0];
+ h.nodes.dropzone.getBoundingClientRect=()=>({left:10,top:20,width:160,height:72});
+ h.nodes.dropzone.dragenter({preventDefault(){},currentTarget:h.nodes.dropzone,clientX:40,clientY:30,screenX:200,screenY:200,dataTransfer:{types:['Files'],files:[],items:[]}});
+ h.nodes.dropzone.drop({preventDefault(){},stopPropagation(){},target:h.nodes.dropzone,dataTransfer:{types:['Files'],files:[],items:[]}});
+ for(let i=0;i<40&&!(h.nodes['reference-thumbs'].children[0]&&h.nodes['reference-thumbs'].children[0].children[2].textContent==='生成中拖入.png');i++)await new Promise(resolve=>setTimeout(resolve,50));
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'生成中拖入.png');
+ assert.equal(h.requests.length,before);
+ const after=JSON.parse(h.local.get('lk888-jobs'))[0];
+ assert.equal(after.id,job.id);
+ assert.equal(after.tasks.length,job.tasks.length);
+ assert.equal(after.tasks[0].id,job.tasks[0].id);
+ assert.equal(after.chargeState,job.chargeState);
+ assert.notEqual(after.chargeState,'cleared');
 });
-test('a panel drop outside the image row still uses the overlay instead of a dialog',async()=>{
- const h=harness({dropQueue:[[{name:'拖入.png',data:'data:image/png;base64,YWJj'}]]});await h.ready();
- const enter=h.docEvents.dragenter({preventDefault(){},dataTransfer:{types:['Files'],files:[],items:[]}});
- await h.docEvents.drop({preventDefault(){},stopPropagation(){},target:h.nodes.status,dataTransfer:{files:[],items:[]}});
- await enter;
- await new Promise(resolve=>setTimeout(resolve,80));
- assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/cover')));
- assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
- assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'拖入.png');
-});
-test('cover posts the dropzone rectangle and a miss does not open a window',async()=>{
- const h=harness({dropQueue:[[]],dropGraceMs:80});await h.ready();
- h.nodes.dropzone.getBoundingClientRect=()=>({left:12,top:40,width:104,height:96});
- const enter=h.nodes.dropzone.dragenter({preventDefault(){},screenX:400,screenY:300,clientX:20,clientY:50,dataTransfer:{types:['Files'],files:[],items:[]}});
- await h.nodes.dropzone.drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
- await enter;
- await new Promise(resolve=>setTimeout(resolve,900));
- const cover=h.helperCalls.find(call=>call.url.includes('/drop/cover')&&call.options.method==='POST');
- assert.deepEqual(JSON.parse(cover.options.body),{x:400,y:300,left:392,top:290,width:104,height:96});
- assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
- assert.equal(h.nodes['reference-thumbs'].children.length,0);
- assert.match(h.nodes.status.textContent,/这次没有读到拖入的图片|拖入接图层还在启动/);
- assert.doesNotMatch(h.nodes.status.textContent,/局部改图 · 拖入|弹出的窗口/);
-});
-test('an empty drop with no drag does not open a dialog',async()=>{
+test('a drag outside the add-image area does not raise a catch window',async()=>{
  const h=harness();await h.ready();
- await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
+ const before=h.helperCalls.length;
+ h.nodes['images-row'].dragenter({preventDefault(){},screenX:320,screenY:240,dataTransfer:{types:['Files'],files:[],items:[]}});
+ await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},target:h.nodes['images-row'],dataTransfer:{files:[],items:[]}});
+ await h.ready();
+ assert.equal(h.nodes['reference-thumbs'].children.length,0);
+ assert.ok(!h.helperCalls.slice(before).some(call=>/\/drop\/(cover|open|poll)/.test(call.url)));
+ assert.doesNotMatch((h.nodes.status&&h.nodes.status.textContent)||'',/已添加|没有读到拖入的图片|停一下再松开/);
+ assert.equal(h.nodes.generate.disabled,false);
+});
+test('a file dropped on the add-image area is imported without an overlay',async()=>{
+ const h=harness();await h.ready();
+ await h.nodes.dropzone.drop({preventDefault(){},stopPropagation(){},target:h.nodes.dropzone,dataTransfer:{files:[{name:'窗口.jpg',size:3,arrayBuffer:async()=>Uint8Array.from([4,5,6]).buffer}]}});
+ await h.ready();
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'窗口.jpg');
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(cover|open)/.test(call.url)));
+});
+test('a drop elsewhere on the panel still accepts file bytes and does not cover the screen',async()=>{
+ const h=harness();await h.ready();
+ await h.docEvents.drop({preventDefault(){},stopPropagation(){},target:h.nodes.status,dataTransfer:{files:[{name:'拖入.png',size:1,arrayBuffer:async()=>Uint8Array.from([1]).buffer}]}});
+ await h.ready();
+ assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'拖入.png');
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(cover|open)/.test(call.url)));
+});
+test('the add area reports a miss without asking for another drag or opening a dialog',async()=>{
+ const h=harness({dropGraceMs:350});await h.ready();
+ h.nodes.dropzone.getBoundingClientRect=()=>({left:8,top:8,width:120,height:64});
+ h.nodes.dropzone.dragenter({preventDefault(){},currentTarget:h.nodes.dropzone,clientX:20,clientY:18,screenX:100,screenY:80,dataTransfer:{types:['Files'],files:[],items:[]}});
+ h.nodes.dropzone.drop({preventDefault(){},stopPropagation(){},target:h.nodes.dropzone,currentTarget:h.nodes.dropzone,dataTransfer:{files:[],items:[]}});
+ for(let i=0;i<30&&!/添加图片区域没有接到/.test((h.nodes.status&&h.nodes.status.textContent)||'');i++)await new Promise(resolve=>setTimeout(resolve,50));
+ assert.equal(h.nodes['reference-thumbs'].children.length,0);
+ assert.match(h.nodes.status.textContent,/添加图片区域没有接到这次拖放的文件/);
+ assert.doesNotMatch(h.nodes.status.textContent,/停一下再松开|接图层还在启动|松手添加|请点「添加图片」/);
+ assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/cover')));
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/open|\/clipboard/.test(call.url)));
+ assert.equal(h.nodes.generate.disabled,false);
+});
+test('an empty drop outside the add area does not open a dialog',async()=>{
+ const h=harness();await h.ready();
+ await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},target:h.nodes['images-row'],dataTransfer:{files:[],items:[]}});
  assert.equal(h.nodes['reference-thumbs'].children.length,0);
  assert.ok(!h.helperCalls.some(call=>/\/drop\/(open|cover)/.test(call.url)));
- assert.match(h.nodes.status.textContent,/这次没有读到拖入的图片/);
- assert.doesNotMatch(h.nodes.status.textContent,/该来源没有提供可读取的图片|语音会话/);
+ assert.doesNotMatch((h.nodes.status&&h.nodes.status.textContent)||'',/已添加|该来源没有提供可读取的图片|语音会话|停一下再松开/);
 });
 test('a nameless PNG or JPEG is recognized from its bytes',async()=>{
  const h=harness();await h.ready();
@@ -187,17 +261,14 @@ test('items-only and getFiles-only drops add images with missing MIME types',asy
  assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'微信另存.png');
  assert.equal(h.nodes['reference-thumbs'].children[1].children[2].textContent,'电脑图片.jpg');
 });
-test('a file UXP cannot read and that has no path is caught by the overlay',async()=>{
+test('a file the panel cannot read and that has no path asks for the file picker instead of a catch layer',async()=>{
  const h=harness({dropQueue:[[{name:'拖入.png',data:'data:image/png;base64,YWJj'}]]});await h.ready();
- const enter=h.nodes['images-row'].dragenter({preventDefault(){},dataTransfer:{types:['Files'],files:[]}});
  await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[{name:'微信图片.png',size:1,arrayBuffer:async()=>{throw new Error('access denied');}}]}});
- await enter;
- await new Promise(resolve=>setTimeout(resolve,80));
- assert.ok(h.helperCalls.some(call=>call.url.includes('/drop/cover')));
- assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
- assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/read')));
- assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'拖入.png');
- assert.doesNotMatch(h.nodes.status.textContent,/该来源没有提供可读取的图片|语音会话|请添加 PNG、JPG 或 WebP/);
+ await h.ready();
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(cover|open|read)/.test(call.url)));
+ assert.equal(h.nodes['reference-thumbs'].children.length,0);
+ assert.match(h.nodes.status.textContent,/无法读取/);
+ assert.equal(h.nodes.generate.disabled,false);
 });
 test('Explorer file URL is captured before the drop transfer is cleared and read without the helper',async()=>{
  let readStarted=false;
@@ -211,7 +282,7 @@ test('Explorer file URL is captured before the drop transfer is cleared and read
  assert.equal(h.nodes['reference-thumbs'].children.length,1);
  assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'参考.png');
  assert.match(decodeURIComponent(urls[0]),/参考\.png/);
- assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/')));
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(?!trace)/.test(call.url)));
 });
 test('Explorer path is read by the local helper when UXP cannot read the dropped file',async()=>{
  const h=harness();await h.ready();
@@ -232,7 +303,7 @@ test('a file UXP can read does not call the helper even if it also has a path',a
  await h.ready();
  await h.nodes['images-row'].drop({preventDefault(){},dataTransfer:{files:[{name:'直接.png',path:'C:\\pics\\直接.png',arrayBuffer:async()=>Uint8Array.from([4]).buffer}]}});
  assert.equal(h.nodes['reference-thumbs'].children[0].children[2].textContent,'直接.png');
- assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/')));
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(?!trace)/.test(call.url)));
 });
 test('unreadable Explorer drop names a closed helper instead of a voice session',async()=>{
  const h=harness({helperDown:true});await h.ready();
@@ -241,14 +312,25 @@ test('unreadable Explorer drop names a closed helper instead of a voice session'
  assert.match(h.nodes.status.textContent,/本机图片拖入服务未开启/);
  assert.doesNotMatch(h.nodes.status.textContent,/语音会话|提交状态不确定/);
 });
-test('an empty drop with the helper closed does not show a voice session',async()=>{
+test('an empty drop outside the add area with the helper closed does not show a voice session',async()=>{
  const h=harness({helperDown:true});await h.ready();
  await h.nodes['images-row'].dragenter({preventDefault(){},dataTransfer:{types:['Files'],files:[],items:[]}});
- await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},dataTransfer:{files:[],items:[]}});
+ await h.nodes['images-row'].drop({preventDefault(){},stopPropagation(){},target:h.nodes['images-row'],dataTransfer:{files:[],items:[]}});
+ await h.ready();
  assert.equal(h.nodes['reference-thumbs'].children.length,0);
+ assert.doesNotMatch((h.nodes.status&&h.nodes.status.textContent)||'',/语音会话|接图层还在启动|提交状态不确定|已添加/);
+ assert.ok(!h.helperCalls.some(call=>/\/drop\/(open|cover)/.test(call.url)));
+});
+test('the add area names a closed helper instead of a voice session',async()=>{
+ const h=harness({helperDown:true,dropGraceMs:400});await h.ready();
+ h.nodes.dropzone.getBoundingClientRect=()=>({left:4,top:4,width:100,height:48});
+ h.nodes.dropzone.dragenter({preventDefault(){},currentTarget:h.nodes.dropzone,clientX:10,clientY:10,dataTransfer:{types:['Files'],files:[],items:[]}});
+ h.nodes.dropzone.drop({preventDefault(){},stopPropagation(){},target:h.nodes.dropzone,dataTransfer:{files:[],items:[]}});
+ for(let i=0;i<20&&!/拖入服务未开启/.test((h.nodes.status&&h.nodes.status.textContent)||'');i++)await new Promise(resolve=>setTimeout(resolve,40));
  assert.match(h.nodes.status.textContent,/本机图片拖入服务未开启/);
- assert.doesNotMatch(h.nodes.status.textContent,/语音会话|该来源没有提供可读取的图片|提交状态不确定/);
- assert.ok(!h.helperCalls.some(call=>call.url.includes('/drop/open')));
+ assert.doesNotMatch(h.nodes.status.textContent,/语音会话|提交状态不确定/);
+ assert.equal(h.nodes['reference-thumbs'].children.length,0);
+ assert.equal(h.nodes.generate.disabled,false);
 });
 
 test('dropping on an occupied reference replaces only that slot; dropping on the empty slot appends',async()=>{
@@ -353,7 +435,7 @@ test('invalid mixed file drop does not leave a partial reference list',async()=>
  assert.equal(h.nodes['reference-thumbs'].children.length,0);
  assert.match(h.nodes.status.textContent,/PNG、JPG 或 WebP/);
 });
-test('generation releases editor and never auto imports results',async()=>{const h=harness();await h.ready();await h.nodes.generate.click();await h.ready();assert.equal(h.requests.length,1);assert.equal(h.calls.length,0);assert.equal(h.nodes.generate.disabled,false);assert.ok(JSON.parse(h.local.get('lk888-jobs'))[0].tasks[0].results.length);});
+test('generation releases editor and never auto imports results',async()=>{const h=harness();await h.ready();await h.nodes.generate.click();await h.ready();assert.equal(h.requests.length,1);assert.equal(h.requests[0].params.seed,undefined);assert.doesNotMatch(h.requests[0].prompt,/这一张是第/);assert.equal(h.calls.length,0);assert.equal(h.nodes.generate.disabled,false);assert.ok(JSON.parse(h.local.get('lk888-jobs'))[0].tasks[0].results.length);});
 test('same-size document with a new id is adopted instead of asking for another selection read',async()=>{
  const h=harness();await h.ready();await h.nodes['capture-selection'].click();
  h.app.activeDocument.id=77;
@@ -369,6 +451,15 @@ test('a different canvas size still asks for the current document selection',asy
  assert.equal(h.requests.length,0);
  assert.match(h.nodes.status.textContent,/请读取当前文档选区/);
  assert.doesNotMatch(h.nodes.status.textContent,/语音会话/);
+});
+test('a healthy helper without image prepare still submits and does not claim the assistant is off',async()=>{
+ const h=harness({helperPrepareMissing:true});await h.ready();await h.nodes['capture-selection'].click();
+ h.nodes.prompt.value='字体写清楚小浣熊干脆面';await h.nodes.generate.click();await h.ready();
+ const notes=(h.nodes['task-content'].children||[]).map(node=>node.textContent||'').join('\n');
+ const text=h.nodes.status.textContent+'\n'+notes;
+ assert.equal(h.requests.length,1);
+ assert.match(text,/图片预处理不可用/);
+ assert.doesNotMatch(text,/本机助手未开启|语音会话|未收到任务编号/);
 });
 test('a closed helper skips image prepare, submits the original, and never shows voice copy',async()=>{
  const h=harness({helperDown:true});await h.ready();await h.nodes['capture-selection'].click();
@@ -397,7 +488,8 @@ test('generation failure shows the provider reason and never a voice-session or 
 test('reload button saves the current editor and reloads without resubmitting',async()=>{const h=harness();await h.ready();await h.nodes['tab-edit'].click();h.nodes.prompt.value='保留这个提示词';await h.nodes['reload-panel'].click();assert.equal(h.reloads,1);assert.equal(JSON.parse(h.local.get('lk888-jobs'))[0].prompt,'保留这个提示词');assert.equal(h.local.get('lk888-reload-job-id'),JSON.parse(h.local.get('lk888-jobs'))[0].id);assert.equal(h.requests.length,0);});
 test('automatic generation size and ratio follow the selected region',async()=>{const h=harness();await h.ready();await h.nodes['capture-selection'].click();await h.nodes.generate.click();await h.ready();assert.equal(h.requests[0].params.image_size,'1K');assert.equal(h.requests[0].params.aspect_ratio,'16:9');});
 test('another region can submit while previous task remains in history',async()=>{const h=harness();await h.ready();await h.nodes.generate.click();await h.ready();await h.nodes['capture-selection'].click();h.nodes.prompt.value='修改另一区域';await h.nodes.generate.click();await h.ready();assert.equal(h.requests.length,2);assert.equal(JSON.parse(h.local.get('lk888-jobs')).length,2);assert.equal(h.calls.length,0);});
-test('model quality aspect and four tasks are preserved',async()=>{const h=harness();await h.ready();h.nodes.count.value='4';h.nodes.quality.value='2K';h.nodes['output-size'].value='16:9';await h.nodes.generate.click();await h.ready();assert.equal(h.requests.length,4);assert.equal(h.requests[0].params.image_size,'2K');assert.equal(h.requests[0].params.aspect_ratio,'16:9');assert.equal(h.calls.length,0);});
+test('model quality aspect and four tasks are preserved',async()=>{const h=harness();await h.ready();h.nodes.count.value='4';h.nodes.quality.value='2K';h.nodes['output-size'].value='16:9';await h.nodes.generate.click();await h.ready();assert.equal(h.requests.length,4);assert.equal(h.requests[0].params.image_size,'2K');assert.equal(h.requests[0].params.aspect_ratio,'16:9');assert.ok(h.requests.every(request=>request.params.seed===undefined&&request.params.chaos===undefined));const prompts=h.requests.map(request=>request.prompt);assert.equal(new Set(prompts).size,4);for(const n of [1,2,3,4])assert.match(prompts.join('\n'),new RegExp('第'+n+'张候选'));assert.equal(new Set(h.requests.map(request=>JSON.stringify(request.params.images))).size,1);assert.match(JSON.parse(h.local.get('lk888-jobs'))[0].prepareNote,/不同候选/);assert.equal(h.calls.length,0);});
+test('midjourney count asks for chaos instead of an ignored seed',async()=>{const h=harness();await h.ready();h.nodes.model.value='mj_imagine';h.nodes.count.value='3';await h.nodes.generate.click();await h.ready();assert.deepEqual(h.requests.map(request=>request.params.chaos).sort((a,b)=>a-b),[40,70,100]);assert.ok(h.requests.every(request=>request.params.seed===undefined));assert.equal(new Set(h.requests.map(request=>request.prompt)).size,3);});
 
 function findNode(root,predicate){if(predicate(root))return root;for(const child of root.children||[]){const match=findNode(child,predicate);if(match)return match;}return null;}
 function findNodes(root,predicate){return [...(predicate(root)?[root]:[]),...(root.children||[]).flatMap(child=>findNodes(child,predicate))];}
@@ -488,6 +580,13 @@ test('native scrollbar arrows advance exactly two ordered rows without duplicate
  await new Promise(resolve=>setTimeout(resolve,90));tabs.scrollTop=96;tabs.scroll();assert.equal(tabs.scrollTop,128);
  assert.deepEqual(h.nodes['document-tabs'].children.map(node=>Number(node.children[0].textContent)),Array.from({length:20},(_,i)=>i+1));
  assert.match(fs.readFileSync('plugin/panel.css','utf8'),/height:64px; max-height:64px; overflow-x:hidden; overflow-y:auto/);
+ const css=fs.readFileSync('plugin/panel.css','utf8');
+ const html=fs.readFileSync('plugin/index.html','utf8');
+ assert.match(html,/id="panel-scroll"/);
+ assert.match(css,/width:calc\(100% \+ 20px\)/);
+ assert.match(css,/scrollbar-width:none/);
+ assert.match(css,/main::-webkit-scrollbar/);
+ assert.match(css,/\.prompt-editor textarea::-webkit-scrollbar/);
  assert.doesNotMatch(fs.readFileSync('plugin/index.html','utf8'),/id="tabs-(up|down)"/);
 });
 
@@ -544,8 +643,62 @@ test('result thumbnails keep their source and do not download the original until
  if(img.onerror)await img.onerror();
  assert.equal(h.imageDecodes,0);
  assert.match(img.src,/^data:image\/png/);
+ await button(h.nodes['task-content'],'放大预览').onclick();
+ assert.equal(h.nodes['task-preview'].style.display,'flex');
+ assert.match(h.nodes['task-preview-image'].src,/^data:image\/png/);
  await button(h.nodes['task-content'],'添加图层').onclick();await h.ready();
  assert.equal(h.imageDecodes,1);
+});
+test('remote candidate preview comes from the downloaded file, and zoom uses that same preview',async()=>{
+ const h=harness({remoteResult:true});await h.ready();await h.nodes.generate.click();await h.ready();
+ const img=findNode(h.nodes['task-content'],node=>node.id==='img');
+ const caption=findNode(h.nodes['task-content'],node=>node.className==='task-caption');
+ assert.ok(img.src,'preview src was not assigned');
+ assert.doesNotMatch(img.src,/^https:/);
+ assert.match(img.src,/^(blob:|data:image\/png|plugin-temp:)/);
+ if(/^blob:/.test(img.src)&&img.onerror){await img.onerror();assert.match(img.src,/^data:image\/png/);}
+ img.naturalWidth=32;img.naturalHeight=16;if(img.onload)await img.onload();
+ assert.equal(caption.textContent,'32 × 16');
+ await button(h.nodes['task-content'],'放大预览').onclick();
+ assert.equal(h.nodes['task-preview'].style.display,'flex');
+ assert.doesNotMatch(h.nodes['task-preview-image'].src,/^https:/);
+ assert.match(h.nodes['task-preview-image'].src,/^(blob:|data:image\/png|plugin-temp:)/);
+ h.nodes['task-preview-close'].click();
+ assert.equal(h.nodes['task-preview'].style.display,'none');
+ assert.equal(h.nodes['task-preview-image'].src,'');
+});
+test('a large result uses the temp file url and selection still reads when blob URLs throw',async()=>{
+ const h=harness({remoteResult:true,remoteBytes:300*1024,tempFileUrl:true,blobThrows:true});
+ await h.ready();await h.nodes.generate.click();await h.ready();
+ const img=findNode(h.nodes['task-content'],node=>node.id==='img');
+ assert.match(img.src,/^plugin-temp:/);
+ assert.doesNotMatch(img.src,/^https:/);
+ assert.doesNotMatch(img.src,/^data:/);
+ await h.nodes['capture-selection'].click();
+ assert.match(h.nodes.status.textContent,/已读取选区/);
+ assert.equal(h.nodes.generate.disabled,false);
+});
+test('preview failure leaves the remote caption and does not block selection',async()=>{
+ const h=harness({remoteResult:true,remoteBytes:300*1024,blobThrows:true});
+ await h.ready();await h.nodes.generate.click();await h.ready();
+ const img=findNode(h.nodes['task-content'],node=>node.id==='img');
+ const caption=findNode(h.nodes['task-content'],node=>node.className==='task-caption');
+ assert.equal(caption.textContent,'预览加载失败，仍可点击添加图层或保存原图');
+ assert.match(img.src,/^https:\/\/cdn\.example\//);
+ assert.ok(button(h.nodes['task-content'],'添加图层'));
+ assert.ok(button(h.nodes['task-content'],'保存原图'));
+ await h.nodes['capture-selection'].click();
+ assert.match(h.nodes.status.textContent,/已读取选区/);
+ assert.equal(h.nodes.generate.disabled,false);
+});
+test('a failed remote preview says add and save still work',async()=>{
+ const h=harness({remoteResult:true,remoteDownloadFails:true});await h.ready();await h.nodes.generate.click();await h.ready();
+ const caption=findNode(h.nodes['task-content'],node=>node.className==='task-caption');
+ assert.equal(caption.textContent,'预览加载失败，仍可点击添加图层或保存原图');
+ assert.ok(button(h.nodes['task-content'],'添加图层'));
+ assert.ok(button(h.nodes['task-content'],'保存原图'));
+ await button(h.nodes['task-content'],'放大预览').onclick();await h.ready();
+ assert.equal(h.nodes['task-preview-note'].textContent,'预览加载失败，仍可点击添加图层或保存原图');
 });
 test('uploaded references survive reopening a draft without a selection',async()=>{
  const h=harness({noSelection:true});await h.ready();await h.newDraft();
