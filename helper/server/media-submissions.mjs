@@ -46,11 +46,6 @@ export function createSubmissionStore({directory,fetchImpl=fetch}){
     const operation=queue.then(async()=>{
       await fs.mkdir(directory,{recursive:true});
       try{const existing=await get(id);if(existing.fingerprint!==fingerprint)throw Object.assign(new Error('同一提交编号对应不同内容，已阻止提交。'),{status:409});return existing;}catch(e){if(e.status!==404)throw e;}
-      for(const file of await fs.readdir(directory)){
-        if(!/^[a-f0-9]{64}\.json$/.test(file))continue;
-        const record=await get(file.slice(0,-5));
-        if(record.fingerprint===fingerprint&&['submitting','uncertain'].includes(record.state))return {...record,reused:true};
-      }
       const record={id,fingerprint,state:'submitting',createdAt:Date.now(),updatedAt:Date.now()};
       await write(record);
       const pending=dispatch(record,key,payload).catch(()=>{}).finally(()=>active.delete(id));active.set(id,pending);
