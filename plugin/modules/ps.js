@@ -157,47 +157,6 @@ function getDocAspectRatioLabel(w, h) {
  * @param {boolean} viaTempDocCreation - If true, uses a slower method that preserves transparency by creating a temporary document.
  * @returns {Promise<{imageData: ImageData, maskData: ImageData, bounds: object, context: object}>}
  */
-function pixelLength(value) {
-    const raw = value && typeof value === 'object' && '_value' in value ? value._value : value;
-    const number = Number(raw);
-    return Number.isFinite(number) ? number : 0;
-}
-
-function solidBounds(bounds) {
-    if (!bounds) return null;
-    const left = Math.round(pixelLength(bounds.left));
-    const top = Math.round(pixelLength(bounds.top));
-    let right = bounds.right == null ? null : Math.round(pixelLength(bounds.right));
-    let bottom = bounds.bottom == null ? null : Math.round(pixelLength(bounds.bottom));
-    let width = bounds.width == null ? null : Math.round(pixelLength(bounds.width));
-    let height = bounds.height == null ? null : Math.round(pixelLength(bounds.height));
-    if (width == null && right != null) width = right - left;
-    if (height == null && bottom != null) height = bottom - top;
-    if (right == null && width != null) right = left + width;
-    if (bottom == null && height != null) bottom = top + height;
-    if (![left, top, right, bottom].every(Number.isFinite) || !(right > left) || !(bottom > top)) return null;
-    return { left, top, right, bottom, width: right - left, height: bottom - top };
-}
-
-// A rectangular marquee is all white, so a full scan cannot stop early. Cap the
-// walk; this flag is only a select-all hint and is not the placed mask.
-function maskLooksSelectAll(buffer) {
-    const length = buffer ? buffer.length : 0;
-    if (!length) return false;
-    const stride = length > 262144 ? Math.ceil(length / 262144) : 1;
-    if (buffer[0] < 250 || buffer[length - 1] < 250) return false;
-    for (let i = 0; i < length; i += stride) {
-        if (buffer[i] < 250) return false;
-    }
-    return true;
-}
-
-function releaseImageData(image) {
-    if (image && typeof image.dispose === 'function') {
-        try { image.dispose(); } catch (_) {}
-    }
-}
-
 function normalizeBounds(bounds) {
     if (!bounds) return null;
     const num = value => {
@@ -238,10 +197,8 @@ async function captureSelection(sourceMode, viaTempDocCreation, fullDocMask = fa
     return await core.executeAsModal(async (executionContext) => {
         const doc = app.activeDocument;
         const activeLayer = doc.activeLayers[0];
-        // Document.width can be a UnitValue. Leaving it as an object makes
-        // Math.min return NaN and imaging.getSelection never comes back.
-        const docWidth = pixelLength(doc.width);
-        const docHeight = pixelLength(doc.height);
+        const docWidth = doc.width;
+        const docHeight = doc.height;
 
         let expandedBounds;
         let bestRatioName;
@@ -463,45 +420,19 @@ async function captureSelection(sourceMode, viaTempDocCreation, fullDocMask = fa
         // Get the selection mask
         // API often returns tight bounds even if we request expanded ones.
         // We must handle the potential size mismatch manually.
-        expandedBounds = solidBounds(expandedBounds);
-        if (!expandedBounds) throw new Error('选区范围无效，无法读取画面。请重新圈选后再试。');
-        const requestBounds = {
-            left: expandedBounds.left,
-            top: expandedBounds.top,
-            right: expandedBounds.right,
-            bottom: expandedBounds.bottom
-        };
-        let selectionResult;
-        try {
-            selectionResult = await imaging.getSelection({
-                documentID: doc.id,
-                sourceBounds: requestBounds
-            });
-        } catch (error) {
-            const message = error && error.message || '';
-            if (/no active selection|没有活动选区/i.test(message)) throw new Error('请先在 PS 用框选或套索圈出区域。');
-            throw new Error(message ? '读取选区蒙版失败：' + message : '读取选区蒙版失败。');
-        }
+        const selectionResult = await imaging.getSelection({
+            documentID: doc.id,
+            sourceBounds: expandedBounds
+        });
 
         // Resolve the actual returned bounds and data
-        const returnedBounds = solidBounds(selectionResult.sourceBounds) || expandedBounds;
+        const returnedBounds = selectionResult.sourceBounds || expandedBounds;
         const psImageData = selectionResult.imageData;
         let finalMaskBuffer;
 
-        // Copy the mask out and release it before getPixels. Photoshop keeps only
-        // one or two live PhotoshopImageData objects; getPixels waits forever
-        // while this mask still holds a slot, and the panel never leaves
-        // “正在读取选区”.
-        let rawMaskData;
-        try {
-            rawMaskData = await psImageData.getData();
-        } catch (error) {
-            releaseImageData(psImageData);
-            const message = error && error.message || '';
-            throw new Error(message ? '读取选区蒙版失败：' + message : '读取选区蒙版失败。');
-        }
+        // Get raw data from the returned image object
+        const rawMaskData = await psImageData.getData();
         const tightMaskBuffer = new Uint8Array(rawMaskData);
-        if (!viaTempDocCreation) releaseImageData(psImageData);
 
         // Check if we need to manually pad
         // Compare logic: check if returned width/height matches requested dimensions
@@ -555,7 +486,8 @@ async function captureSelection(sourceMode, viaTempDocCreation, fullDocMask = fa
         // NOTE: Bounds-based check alone is not sufficient: Full Doc mode also produces
         // expandedBounds equal to the document size but with a real mask (black background,
         // white selection area). Only a pixel-level check is reliable here.
-        const isSelectAll = maskLooksSelectAll(finalMaskBuffer);
+        // Short-circuit: for non-Select-All masks the loop exits on the first dark pixel.
+        const isSelectAll = finalMaskBuffer.every(v => v >= 250);
         if (isSelectAll) {
             console.log('[Capture] Select All detected — mask is trivially all-white, will suppress mask-related operations.');
         }
@@ -610,25 +542,18 @@ async function captureSelection(sourceMode, viaTempDocCreation, fullDocMask = fa
                 pixelOptions.colorProfile = 'sRGB IEC61966-2.1';
             }
 
-            pixelOptions.sourceBounds = requestBounds;
-            try {
-                if (sourceMode === 'copyMerged') {
-                    // Get merged (composite) pixels
-                    imageData = await imaging.getPixels(pixelOptions);
-                } else {
-                    // Get pixels from current layer only
-                    if (!activeLayer) {
-                        throw new Error("No active layer");
-                    }
-                    imageData = await imaging.getPixels({
-                        ...pixelOptions,
-                        layerID: activeLayer.id
-                    });
+            if (sourceMode === 'copyMerged') {
+                // Get merged (composite) pixels
+                imageData = await imaging.getPixels(pixelOptions);
+            } else {
+                // Get pixels from current layer only
+                if (!activeLayer) {
+                    throw new Error("No active layer");
                 }
-            } catch (error) {
-                releaseImageData(imageData && imageData.imageData);
-                const message = error && error.message || '';
-                throw new Error(message ? '读取选区画面失败：' + message : '读取选区画面失败。');
+                imageData = await imaging.getPixels({
+                    ...pixelOptions,
+                    layerID: activeLayer.id
+                });
             }
         }
 
@@ -1760,7 +1685,6 @@ module.exports = {
     hasActiveSelection,
     getSelectionBounds,
     normalizeBounds,
-    maskLooksSelectAll,
     captureSelection,
     imageDataToDataURL,
     placeBack,
